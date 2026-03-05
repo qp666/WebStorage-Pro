@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebStorage Pro</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="logo">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+          <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+          <line x1="6" y1="6" x2="6.01" y2="6"></line>
+          <line x1="6" y1="18" x2="6.01" y2="18"></line>
+        </svg>
+        <span>WebStorage Pro</span>
+      </div>
+      <div class="actions">
+        <button id="theme-btn" class="icon-btn" title="Toggle Theme">
+          <!-- Sun Icon -->
+          <svg id="icon-sun" class="hidden" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+          <!-- Moon Icon -->
+          <svg id="icon-moon" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+        </button>
+        <button id="export-btn" class="icon-btn" title="Export to JSON">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        </button>
+        <button id="refresh-btn" title="Refresh" class="icon-btn">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6"></path><path d="M1 20v-6h6"></path><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+        </button>
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button id="tab-local" class="tab active">
+        <span class="tab-label">LocalStorage</span>
+        <span class="tab-badge" id="badge-local">0</span>
+      </button>
+      <button id="tab-session" class="tab">
+        <span class="tab-label">SessionStorage</span>
+        <span class="tab-badge" id="badge-session">0</span>
+      </button>
+    </div>
+
+    <div class="toolbar">
+      <div class="search-wrapper">
+        <input type="text" id="search-input" placeholder="Search keys...">
+        <button id="clear-search" class="icon-btn hidden" title="Clear">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+      </div>
+      <div class="toolbar-actions">
+        <button id="clear-all-btn" class="danger-btn">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2-2v2"></path></svg>
+          Clear Storage
+        </button>
+      </div>
+    </div>
+
+    <div id="storage-list" class="storage-list">
+      <!-- Items will be injected here -->
+      <div class="empty-state">Loading...</div>
+    </div>
+
+    <footer>
+      <button id="add-btn" class="primary-btn">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        Add New Item
+      </button>
+    </footer>
+  </div>
+
+  <!-- Modal for Add/Edit -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h3 id="modal-title">Add Item</h3>
+      <div class="form-group">
+        <label for="item-key">Key</label>
+        <input type="text" id="item-key" placeholder="Enter key">
+      </div>
+      <div class="form-group">
+        <label for="item-value">Value</label>
+        <textarea id="item-value" placeholder="Enter value" rows="5"></textarea>
+      </div>
+      <div class="modal-actions">
+        <button id="modal-cancel" class="secondary-btn">Cancel</button>
+        <button id="modal-save" class="primary-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div id="confirm-modal" class="modal hidden">
+    <div class="modal-content">
+      <h3 id="confirm-title">Confirm Action</h3>
+      <p id="confirm-message" style="margin-bottom: 20px; color: var(--text-secondary); line-height: 1.5;"></p>
+      <div class="modal-actions">
+        <button id="confirm-cancel" class="secondary-btn">Cancel</button>
+        <button id="confirm-ok" class="danger-btn">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
