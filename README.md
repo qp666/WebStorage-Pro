@@ -1,7 +1,8 @@
 # WebStorage Pro — Browser Extension
 
 WebStorage Pro is a developer-focused browser extension that provides a faster, more visual way to manage `localStorage` and `sessionStorage` than Chrome DevTools.
-<img width="622" height="771" alt="image" src="https://github.com/user-attachments/assets/dbfc229d-78fc-4755-8704-349ba7944a04" />
+
+
 <img width="1847" height="758" alt="image" src="https://github.com/user-attachments/assets/6d62da28-1aaa-4942-91cc-f13317b7c55a" />
 ---
 
@@ -42,24 +43,6 @@ WebStorage Pro is a developer-focused browser extension that provides a faster, 
   - Clear toast feedback for actions (copy, save, delete, export)
   - ESC closes modals (respects stacking and won’t accidentally close the popup)
 
----
-
-## Project Structure
-
-```text
-WebStorage Pro/
-├── manifest.json          # Extension config (Manifest V3)
-├── popup/
-│   ├── popup.html         # UI (HTML)
-│   ├── popup.css          # Styles (CSS; dark/light theme variables)
-│   └── popup.js           # Logic (CRUD, export, theme toggle, confirm/toast)
-├── scripts/
-│   └── content.js         # Content script (reserved for future features)
-└── icons/                 # Icon assets
-    ├── icon16.png
-    ├── icon48.png
-    └── icon128.png
-```
 
 ---
 

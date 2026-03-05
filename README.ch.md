@@ -1,7 +1,8 @@
 # 📝 WebStorage Pro (网页存储专业版) 浏览器扩展
 
 **WebStorage Pro** 是一款专为开发者设计的浏览器扩展，旨在提供比 Chrome DevTools 更直观、更快捷的 `localStorage` 与 `sessionStorage` 管理体验。
-<img width="622" height="771" alt="image" src="https://github.com/user-attachments/assets/dbfc229d-78fc-4755-8704-349ba7944a04" />
+
+
 <img width="1847" height="758" alt="image" src="https://github.com/user-attachments/assets/6d62da28-1aaa-4942-91cc-f13317b7c55a" />
 ---
 
@@ -42,25 +43,6 @@
     *   **ESC 快捷键**：支持按 `Esc` 键关闭弹窗（优先关闭最上层弹窗，避免误关扩展）。
     *   **自适应 UI**：美观的卡片式布局，Tab 切换动画，自适应角标宽度。
 
----
-
-## 📂 项目文件结构
-
-```text
-WebStorage Pro/
-├── manifest.json         # 扩展配置文件 (Manifest V3)
-├── popup/
-│   ├── popup.html        # 扩展主界面 (HTML)
-│   ├── popup.css         # 样式文件 (CSS, 卡片式设计, 深色模式适配)
-│   └── popup.js          # 核心交互逻辑 (增删改查、导出、主题切换)
-├── scripts/
-│   └── content.js        # 内容脚本 (用于监听存储变化等扩展功能)
-└── icons/                # 图标资源
-    ├── icon.svg          # 矢量源文件
-    ├── icon16.png
-    ├── icon48.png
-    └── icon128.png
-```
 
 ---
 
