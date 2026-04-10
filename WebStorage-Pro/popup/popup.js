@@ -11,7 +11,10 @@ document.addEventListener('DOMContentLoaded', () => {
     },
     searchQuery: '',
     editingKey: null, // Track original key for renaming
-    isLocked: false
+    isLocked: false,
+    currentTabId: null,
+    currentTabUrl: null,
+    tabSyncTimer: null
   };
 
   // DOM Elements
@@ -59,7 +62,8 @@ document.addEventListener('DOMContentLoaded', () => {
     await initLockMode();
     initTheme();
     bindEvents();
-    loadData();
+    await loadData();
+    initSidePanelAutoSync();
   }
 
   async function initLayoutMode() {
@@ -129,6 +133,42 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch (error) {
       console.error('Failed to open side panel:', error);
     }
+  }
+
+  function initSidePanelAutoSync() {
+    if (!isSidePanelMode()) return;
+
+    const syncTabChange = async () => {
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab) return;
+
+        const nextTabId = typeof tab.id === 'number' ? tab.id : null;
+        const nextTabUrl = typeof tab.url === 'string' ? tab.url : null;
+        const changed = nextTabId !== state.currentTabId || nextTabUrl !== state.currentTabUrl;
+
+        if (changed) {
+          await loadData();
+        }
+      } catch (error) {
+        console.error('Failed to sync active tab in side panel:', error);
+      }
+    };
+
+    // Poll active tab changes because side panel stays mounted across tab switches.
+    state.tabSyncTimer = window.setInterval(syncTabChange, 700);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        syncTabChange();
+      }
+    });
+    window.addEventListener('focus', syncTabChange);
+    window.addEventListener('beforeunload', () => {
+      if (state.tabSyncTimer) {
+        clearInterval(state.tabSyncTimer);
+        state.tabSyncTimer = null;
+      }
+    });
   }
 
   function closePopupIfNeeded() {
@@ -276,6 +316,9 @@ document.addEventListener('DOMContentLoaded', () => {
         showError('No active tab found.');
         return;
       }
+
+      state.currentTabId = typeof tab.id === 'number' ? tab.id : null;
+      state.currentTabUrl = typeof tab.url === 'string' ? tab.url : null;
 
       // Check if we can script this tab
       if (tab.url.startsWith('chrome://') || tab.url.startsWith('edge://') || tab.url.startsWith('about:')) {
