@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "WebStorage Pro",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A professional tool to manage LocalStorage and SessionStorage.",
   "permissions": [
     "activeTab",
