@@ -2,16 +2,12 @@ const LOCKED_POPUP_KEY = 'popup_locked_mode';
 const LOCKED_TAB_IDS_KEY = 'popup_locked_tab_ids';
 const LEGACY_LOCKED_TAB_ID_KEY = 'popup_locked_tab_id';
 const SIDEPANEL_PATH = 'popup/popup.html?view=sidepanel';
-const hiddenSidePanelTabs = new Set();
 const lockedSidePanelTabs = new Set();
-const visibleSidePanelTabs = new Set();
-const sidePanelHeartbeat = new Map();
-const SIDEPANEL_VISIBLE_TTL_MS = 350;
 
 async function applyLockState(isLocked) {
   // Popup is updated dynamically per active tab.
-  // Do not auto-open side panel on tab switch/action click.
-  await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: false });
+  // Let browser handle panel opening on action click to preserve user gesture.
+  await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: isLocked });
 }
 
 function normalizeLockedTabIds(data) {
@@ -32,7 +28,7 @@ async function applyPerTabSidePanelOptions(lockedTabIds) {
   const updates = tabs
     .filter((tab) => typeof tab.id === 'number')
     .map((tab) => {
-      const enabled = lockedSet.has(tab.id) && !hiddenSidePanelTabs.has(tab.id);
+      const enabled = lockedSet.has(tab.id);
       return chrome.sidePanel.setOptions({
         tabId: tab.id,
         enabled,
@@ -46,7 +42,7 @@ async function applySidePanelForTab(tabId) {
   const data = await chrome.storage.local.get([LOCKED_POPUP_KEY, LOCKED_TAB_IDS_KEY, LEGACY_LOCKED_TAB_ID_KEY]);
   const isLocked = data[LOCKED_POPUP_KEY] === true;
   const lockedTabIds = normalizeLockedTabIds(data);
-  const enabled = isLocked && lockedTabIds.includes(tabId) && !hiddenSidePanelTabs.has(tabId);
+  const enabled = isLocked && lockedTabIds.includes(tabId);
   await chrome.sidePanel.setOptions({
     tabId,
     enabled,
@@ -98,11 +94,6 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   chrome.storage.local.get([LOCKED_POPUP_KEY, LOCKED_TAB_IDS_KEY, LEGACY_LOCKED_TAB_ID_KEY]).then((data) => {
     const isLocked = data[LOCKED_POPUP_KEY] === true;
     const lockedTabIds = normalizeLockedTabIds(data);
-    for (const tabId of [...hiddenSidePanelTabs]) {
-      if (!lockedTabIds.includes(tabId)) {
-        hiddenSidePanelTabs.delete(tabId);
-      }
-    }
     return applyLockState(isLocked)
       .then(() => applyPerTabSidePanelOptions(isLocked ? lockedTabIds : []))
       .then(() => updateActionPopupForActiveTab());
@@ -128,7 +119,6 @@ chrome.tabs.onCreated.addListener((tab) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status !== 'complete') return;
-  visibleSidePanelTabs.delete(tabId);
   applySidePanelForTab(tabId)
     .then(() => updateActionPopupForActiveTab())
     .catch((error) => {
@@ -136,54 +126,3 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   });
 });
 
-chrome.action.onClicked.addListener(async (tab) => {
-  const tabId = tab && typeof tab.id === 'number' ? tab.id : null;
-  if (tabId === null) return;
-
-  try {
-    if (!lockedSidePanelTabs.has(tabId)) return;
-
-    const lastSeen = sidePanelHeartbeat.get(tabId) || 0;
-    const isRecentlyVisible = Date.now() - lastSeen < SIDEPANEL_VISIBLE_TTL_MS;
-    const isVisible = visibleSidePanelTabs.has(tabId) && isRecentlyVisible;
-    if (isVisible) {
-      // Hide panel for current tab, but keep lock state.
-      await chrome.sidePanel.setOptions({ tabId, enabled: false, path: SIDEPANEL_PATH });
-      hiddenSidePanelTabs.add(tabId);
-      visibleSidePanelTabs.delete(tabId);
-      sidePanelHeartbeat.delete(tabId);
-    } else {
-      // Re-open panel for current tab in the same click gesture.
-      hiddenSidePanelTabs.delete(tabId);
-      const enablePromise = chrome.sidePanel.setOptions({ tabId, enabled: true, path: SIDEPANEL_PATH });
-      const openPromise = chrome.sidePanel.open({ tabId });
-      const results = await Promise.allSettled([enablePromise, openPromise]);
-      const openResult = results[1];
-      if (openResult.status === 'rejected') {
-        hiddenSidePanelTabs.add(tabId);
-        throw openResult.reason;
-      }
-      visibleSidePanelTabs.add(tabId);
-      sidePanelHeartbeat.set(tabId, Date.now());
-    }
-  } catch (error) {
-    console.error('Failed to toggle side panel from action click:', error);
-  }
-});
-
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || message.type !== 'sidepanel-visibility') return;
-  const tabId = message.tabId;
-  if (typeof tabId !== 'number') return;
-
-  if (message.visible) {
-    visibleSidePanelTabs.add(tabId);
-    hiddenSidePanelTabs.delete(tabId);
-    sidePanelHeartbeat.set(tabId, Date.now());
-  } else {
-    visibleSidePanelTabs.delete(tabId);
-    sidePanelHeartbeat.delete(tabId);
-  }
-
-  sendResponse({ ok: true });
-});
