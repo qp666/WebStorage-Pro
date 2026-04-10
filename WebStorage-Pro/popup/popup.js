@@ -1,5 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   const LOCKED_POPUP_KEY = 'popup_locked_mode';
+  const LOCKED_TAB_IDS_KEY = 'popup_locked_tab_ids';
+  const LEGACY_LOCKED_TAB_ID_KEY = 'popup_locked_tab_id';
   const SIDEPANEL_VIEW = 'sidepanel';
 
   // State
@@ -12,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
     searchQuery: '',
     editingKey: null, // Track original key for renaming
     isLocked: false,
+    lockedTabIds: [],
     currentTabId: null,
     currentTabUrl: null,
     tabSyncTimer: null
@@ -62,6 +65,7 @@ document.addEventListener('DOMContentLoaded', () => {
     await initLockMode();
     initTheme();
     bindEvents();
+
     await loadData();
     initSidePanelAutoSync();
   }
@@ -69,6 +73,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function initLayoutMode() {
     if (isSidePanelMode()) {
       document.body.classList.add('sidepanel-mode');
+      initSidePanelVisibilitySync();
     }
   }
 
@@ -77,14 +82,53 @@ document.addEventListener('DOMContentLoaded', () => {
     return params.get('view') === SIDEPANEL_VIEW;
   }
 
-  async function initLockMode() {
-    const stored = await chrome.storage.local.get(LOCKED_POPUP_KEY);
-    if (typeof stored[LOCKED_POPUP_KEY] === 'boolean') {
-      state.isLocked = stored[LOCKED_POPUP_KEY];
-    } else {
-      // Backward compatibility for old localStorage setting.
-      state.isLocked = localStorage.getItem(LOCKED_POPUP_KEY) === '1';
+  async function notifySidePanelVisibility(visible) {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || typeof tab.id !== 'number') return;
+      await chrome.runtime.sendMessage({
+        type: 'sidepanel-visibility',
+        tabId: tab.id,
+        visible
+      });
+    } catch (error) {
+      // Ignore sync errors to avoid affecting UI interactions.
     }
+  }
+
+  function initSidePanelVisibilitySync() {
+    notifySidePanelVisibility(true);
+    const heartbeatTimer = window.setInterval(() => {
+      notifySidePanelVisibility(true);
+    }, 150);
+    document.addEventListener('visibilitychange', () => {
+      notifySidePanelVisibility(!document.hidden);
+    });
+    window.addEventListener('pagehide', () => {
+      notifySidePanelVisibility(false);
+      clearInterval(heartbeatTimer);
+    });
+    window.addEventListener('beforeunload', () => {
+      notifySidePanelVisibility(false);
+      clearInterval(heartbeatTimer);
+    });
+  }
+
+  async function initLockMode() {
+    const [stored, activeTab] = await Promise.all([
+      chrome.storage.local.get([LOCKED_POPUP_KEY, LOCKED_TAB_IDS_KEY, LEGACY_LOCKED_TAB_ID_KEY]),
+      chrome.tabs.query({ active: true, currentWindow: true })
+    ]);
+    const currentTab = activeTab[0];
+    const currentTabId = currentTab && typeof currentTab.id === 'number' ? currentTab.id : null;
+
+    const lockedTabIds = normalizeLockedTabIds(stored);
+    state.lockedTabIds = lockedTabIds;
+    const globalLocked = typeof stored[LOCKED_POPUP_KEY] === 'boolean'
+      ? stored[LOCKED_POPUP_KEY]
+      : localStorage.getItem(LOCKED_POPUP_KEY) === '1';
+
+    state.isLocked = globalLocked && currentTabId !== null && state.lockedTabIds.includes(currentTabId);
     updateLockButton();
 
     // In lock mode, intercept ESC at page level when no modal is open.
@@ -99,39 +143,89 @@ document.addEventListener('DOMContentLoaded', () => {
     }, true);
   }
 
+  function normalizeLockedTabIds(data) {
+    const rawList = Array.isArray(data[LOCKED_TAB_IDS_KEY]) ? data[LOCKED_TAB_IDS_KEY] : [];
+    const validList = rawList.filter((id) => typeof id === 'number');
+    if (validList.length > 0) {
+      return [...new Set(validList)];
+    }
+
+    const legacyId = data[LEGACY_LOCKED_TAB_ID_KEY];
+    if (typeof legacyId === 'number') {
+      return [legacyId];
+    }
+
+    return [];
+  }
+
   function updateLockButton() {
     elements.pinBtn.classList.toggle('active', state.isLocked);
     elements.pinBtn.title = state.isLocked ? 'Unlock popup' : 'Lock popup';
   }
 
   async function toggleLockMode() {
-    state.isLocked = !state.isLocked;
-    localStorage.setItem(LOCKED_POPUP_KEY, state.isLocked ? '1' : '0');
-    await chrome.storage.local.set({ [LOCKED_POPUP_KEY]: state.isLocked });
-    updateLockButton();
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const activeTabId = tab && typeof tab.id === 'number' ? tab.id : null;
+    if (activeTabId === null) {
+      showToast('No active tab found');
+      return;
+    }
+    const shouldLock = !state.isLocked;
 
-    if (state.isLocked) {
-      await openSidePanel();
-      showToast('Lock enabled (Side Panel)');
-      closePopupIfNeeded();
+    if (shouldLock) {
+      // Open side panel first while click gesture is still active.
+      const opened = await openSidePanel(activeTabId);
+      if (opened) {
+        const nextLockedTabIds = [...new Set([...state.lockedTabIds, activeTabId])];
+        state.isLocked = true;
+        state.lockedTabIds = nextLockedTabIds;
+        localStorage.setItem(LOCKED_POPUP_KEY, '1');
+        await chrome.storage.local.set({
+          [LOCKED_POPUP_KEY]: true,
+          [LOCKED_TAB_IDS_KEY]: nextLockedTabIds,
+          [LEGACY_LOCKED_TAB_ID_KEY]: null
+        });
+        updateLockButton();
+        showToast('Lock enabled (Side Panel)');
+        closePopupIfNeeded();
+      } else {
+        showToast('Failed to open Side Panel');
+      }
     } else {
+      const nextLockedTabIds = state.lockedTabIds.filter((id) => id !== activeTabId);
+      state.isLocked = false;
+      state.lockedTabIds = nextLockedTabIds;
+      const hasAnyLockedTab = nextLockedTabIds.length > 0;
+      localStorage.setItem(LOCKED_POPUP_KEY, hasAnyLockedTab ? '1' : '0');
+      await chrome.storage.local.set({
+        [LOCKED_POPUP_KEY]: hasAnyLockedTab,
+        [LOCKED_TAB_IDS_KEY]: nextLockedTabIds,
+        [LEGACY_LOCKED_TAB_ID_KEY]: null
+      });
+      updateLockButton();
       await closeSidePanelIfNeeded();
       showToast('Lock disabled');
     }
   }
 
-  async function openSidePanel() {
+  async function openSidePanel(targetTabId = null) {
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || typeof tab.id !== 'number') return;
+      const resolvedTabId = typeof targetTabId === 'number'
+        ? targetTabId
+        : (tab && typeof tab.id === 'number' ? tab.id : null);
+      if (resolvedTabId === null) return false;
+
       await chrome.sidePanel.setOptions({
-        tabId: tab.id,
+        tabId: resolvedTabId,
         path: `popup/popup.html?view=${SIDEPANEL_VIEW}`,
         enabled: true
       });
-      await chrome.sidePanel.open({ tabId: tab.id });
+      await chrome.sidePanel.open({ tabId: resolvedTabId });
+      return true;
     } catch (error) {
       console.error('Failed to open side panel:', error);
+      return false;
     }
   }
 
