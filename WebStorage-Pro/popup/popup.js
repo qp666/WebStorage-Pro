@@ -1,4 +1,7 @@
 document.addEventListener('DOMContentLoaded', () => {
+  const LOCKED_POPUP_KEY = 'popup_locked_mode';
+  const SIDEPANEL_VIEW = 'sidepanel';
+
   // State
   const state = {
     currentType: 'local', // 'local' or 'session'
@@ -7,7 +10,8 @@ document.addEventListener('DOMContentLoaded', () => {
       session: {}
     },
     searchQuery: '',
-    editingKey: null // Track original key for renaming
+    editingKey: null, // Track original key for renaming
+    isLocked: false
   };
 
   // DOM Elements
@@ -25,6 +29,7 @@ document.addEventListener('DOMContentLoaded', () => {
     clearAllBtn: document.getElementById('clear-all-btn'),
     refreshBtn: document.getElementById('refresh-btn'),
     exportBtn: document.getElementById('export-btn'),
+    pinBtn: document.getElementById('pin-btn'),
     themeBtn: document.getElementById('theme-btn'),
     iconSun: document.getElementById('icon-sun'),
     iconMoon: document.getElementById('icon-moon'),
@@ -49,10 +54,102 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize
   init();
 
-  function init() {
+  async function init() {
+    await initLayoutMode();
+    await initLockMode();
     initTheme();
     bindEvents();
     loadData();
+  }
+
+  async function initLayoutMode() {
+    if (isSidePanelMode()) {
+      document.body.classList.add('sidepanel-mode');
+    }
+  }
+
+  function isSidePanelMode() {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('view') === SIDEPANEL_VIEW;
+  }
+
+  async function initLockMode() {
+    const stored = await chrome.storage.local.get(LOCKED_POPUP_KEY);
+    if (typeof stored[LOCKED_POPUP_KEY] === 'boolean') {
+      state.isLocked = stored[LOCKED_POPUP_KEY];
+    } else {
+      // Backward compatibility for old localStorage setting.
+      state.isLocked = localStorage.getItem(LOCKED_POPUP_KEY) === '1';
+    }
+    updateLockButton();
+
+    // In lock mode, intercept ESC at page level when no modal is open.
+    document.addEventListener('keydown', (e) => {
+      const modalVisible = !elements.modal.container.classList.contains('hidden');
+      const confirmVisible = !elements.confirm.container.classList.contains('hidden');
+
+      if (state.isLocked && e.key === 'Escape' && !modalVisible && !confirmVisible) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, true);
+  }
+
+  function updateLockButton() {
+    elements.pinBtn.classList.toggle('active', state.isLocked);
+    elements.pinBtn.title = state.isLocked ? 'Unlock popup' : 'Lock popup';
+  }
+
+  async function toggleLockMode() {
+    state.isLocked = !state.isLocked;
+    localStorage.setItem(LOCKED_POPUP_KEY, state.isLocked ? '1' : '0');
+    await chrome.storage.local.set({ [LOCKED_POPUP_KEY]: state.isLocked });
+    updateLockButton();
+
+    if (state.isLocked) {
+      await openSidePanel();
+      showToast('Lock enabled (Side Panel)');
+      closePopupIfNeeded();
+    } else {
+      await closeSidePanelIfNeeded();
+      showToast('Lock disabled');
+    }
+  }
+
+  async function openSidePanel() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || typeof tab.id !== 'number') return;
+      await chrome.sidePanel.setOptions({
+        tabId: tab.id,
+        path: `popup/popup.html?view=${SIDEPANEL_VIEW}`,
+        enabled: true
+      });
+      await chrome.sidePanel.open({ tabId: tab.id });
+    } catch (error) {
+      console.error('Failed to open side panel:', error);
+    }
+  }
+
+  function closePopupIfNeeded() {
+    if (isSidePanelMode()) return;
+    // In action popup context, close after handing off to side panel.
+    window.close();
+  }
+
+  async function closeSidePanelIfNeeded() {
+    if (!isSidePanelMode()) return;
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || typeof tab.id !== 'number') return;
+
+      // Disable side panel on current tab to force close.
+      await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: false });
+    } catch (error) {
+      console.error('Failed to close side panel:', error);
+    } finally {
+      window.close();
+    }
   }
 
   function initTheme() {
@@ -97,6 +194,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function bindEvents() {
+    // Lock Toggle
+    elements.pinBtn.addEventListener('click', toggleLockMode);
+
     // Theme Toggle
     elements.themeBtn.addEventListener('click', toggleTheme);
 
@@ -307,6 +407,12 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     };
 
+    const copyKey = () => {
+      navigator.clipboard.writeText(key).then(() => {
+        showToast('Key copied!');
+      });
+    };
+
     const copyItem = () => {
       const itemString = JSON.stringify({ [key]: value }, null, 2);
       navigator.clipboard.writeText(itemString).then(() => {
@@ -321,7 +427,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     div.innerHTML = `
       <div class="item-content">
-        <div class="item-key" title="${escapeHtml(key)}">${escapeHtml(key)}</div>
+        <div class="item-key" title="Click to copy key">${escapeHtml(key)}</div>
         <div class="item-value" title="Click to copy">${escapeHtml(value)}</div>
       </div>
       <div class="item-actions">
@@ -332,6 +438,7 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
 
     // Bind events
+    div.querySelector('.item-key').addEventListener('click', copyKey);
     div.querySelector('.item-value').addEventListener('click', copyValue);
     div.querySelector('.btn-copy').addEventListener('click', copyItem);
     
