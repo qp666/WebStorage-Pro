@@ -74,7 +74,6 @@ document.addEventListener('DOMContentLoaded', () => {
   async function initLayoutMode() {
     if (isSidePanelMode()) {
       document.body.classList.add('sidepanel-mode');
-      initSidePanelVisibilitySync();
     }
   }
 
@@ -83,54 +82,8 @@ document.addEventListener('DOMContentLoaded', () => {
     return params.get('view') === SIDEPANEL_VIEW;
   }
 
-  async function notifySidePanelVisibility(visible) {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || typeof tab.id !== 'number') return;
-      await chrome.runtime.sendMessage({
-        type: 'sidepanel-visibility',
-        tabId: tab.id,
-        visible
-      });
-    } catch (error) {
-      // Ignore sync errors to avoid affecting UI interactions.
-    }
-  }
-
-  function initSidePanelVisibilitySync() {
-    notifySidePanelVisibility(true);
-    const heartbeatTimer = window.setInterval(() => {
-      notifySidePanelVisibility(true);
-    }, 150);
-    document.addEventListener('visibilitychange', () => {
-      notifySidePanelVisibility(!document.hidden);
-    });
-    window.addEventListener('pagehide', () => {
-      notifySidePanelVisibility(false);
-      clearInterval(heartbeatTimer);
-    });
-    window.addEventListener('beforeunload', () => {
-      notifySidePanelVisibility(false);
-      clearInterval(heartbeatTimer);
-    });
-  }
-
   async function initLockMode() {
-    const [stored, activeTab] = await Promise.all([
-      chrome.storage.local.get([LOCKED_POPUP_KEY, LOCKED_TAB_IDS_KEY, LEGACY_LOCKED_TAB_ID_KEY]),
-      chrome.tabs.query({ active: true, currentWindow: true })
-    ]);
-    const currentTab = activeTab[0];
-    const currentTabId = currentTab && typeof currentTab.id === 'number' ? currentTab.id : null;
-
-    const lockedTabIds = normalizeLockedTabIds(stored);
-    state.lockedTabIds = lockedTabIds;
-    const globalLocked = typeof stored[LOCKED_POPUP_KEY] === 'boolean'
-      ? stored[LOCKED_POPUP_KEY]
-      : localStorage.getItem(LOCKED_POPUP_KEY) === '1';
-
-    state.isLocked = globalLocked && currentTabId !== null && state.lockedTabIds.includes(currentTabId);
-    updateLockButton();
+    await refreshLockStateFromStorage();
 
     // In lock mode, intercept ESC at page level when no modal is open.
     document.addEventListener('keydown', (e) => {
@@ -162,6 +115,24 @@ document.addEventListener('DOMContentLoaded', () => {
   function updateLockButton() {
     elements.pinBtn.classList.toggle('active', state.isLocked);
     elements.pinBtn.title = state.isLocked ? 'Unlock popup' : 'Lock popup';
+  }
+
+  async function refreshLockStateFromStorage() {
+    const [stored, activeTab] = await Promise.all([
+      chrome.storage.local.get([LOCKED_POPUP_KEY, LOCKED_TAB_IDS_KEY, LEGACY_LOCKED_TAB_ID_KEY]),
+      chrome.tabs.query({ active: true, currentWindow: true })
+    ]);
+    const currentTab = activeTab[0];
+    const currentTabId = currentTab && typeof currentTab.id === 'number' ? currentTab.id : null;
+
+    const lockedTabIds = normalizeLockedTabIds(stored);
+    state.lockedTabIds = lockedTabIds;
+    const globalLocked = typeof stored[LOCKED_POPUP_KEY] === 'boolean'
+      ? stored[LOCKED_POPUP_KEY]
+      : localStorage.getItem(LOCKED_POPUP_KEY) === '1';
+
+    state.isLocked = globalLocked && currentTabId !== null && lockedTabIds.includes(currentTabId);
+    updateLockButton();
   }
 
   async function toggleLockMode() {
@@ -243,6 +214,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const changed = nextTabId !== state.currentTabId || nextTabUrl !== state.currentTabUrl;
 
         if (changed) {
+          await refreshLockStateFromStorage();
           await loadData();
         }
       } catch (error) {
