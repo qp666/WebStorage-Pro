@@ -1,83 +1,99 @@
-# WebStorage Pro — Browser Extension
 
-WebStorage Pro is a developer-focused browser extension for managing **`localStorage`** and **`sessionStorage`** on the active tab with a compact UI—faster to scan than digging through Chrome DevTools Application panels.
+# 🚀 WebStorage Pro（网页存储专业版）浏览器扩展
 
-<img width="1847" height="758" alt="WebStorage Pro UI" src="https://github.com/user-attachments/assets/6d62da28-1aaa-4942-91cc-f13317b7c55a" />
+**WebStorage Pro** 面向前端与全栈开发者，在**当前激活标签页**上可视化查看、编辑 **`localStorage`** 与 **`sessionStorage`**，比反复打开 DevTools「Application」面板更轻量。
 
----
-
-## Usage
-
-1. Download the latest release from GitHub **Releases** and extract the archive.
-2. Open Chrome and go to `chrome://extensions/`, enable **Developer mode**.
-3. Click **Load unpacked** and select the folder that contains `manifest.json` (the `WebStorage-Pro` directory inside the package).
-4. Pin the extension if you like, then click the toolbar icon to open the popup.
-
-To update, load the new unpacked folder again (or replace files and use **Reload** on the extension card).
+<img width="1847" height="758" alt="界面预览" src="[https://github.com/user-attachments/assets/6d62da28-1aaa-4942-91cc-f13317b7c55a](https://github.com/user-attachments/assets/6d62da28-1aaa-4942-91cc-f13317b7c55a)" />
 
 ---
 
-## Features
+## 📖 使用说明
 
-### Storage inspection & editing
+### 方式一：从 Chrome 商店安装（推荐）
+1. 访问 [Chrome Web Store](https://chromewebstore.google.com/)。
+2. 搜索 **“WebStorage Pro”** 并点击 **“添加至 Chrome”** 即可自动安装。
 
-- **LocalStorage / SessionStorage** tabs with live **item counts** on each tab.
-- **Search** keys with a one-click clear control; **Refresh** button to reload from the page.
-- **CRUD**: add, edit (including **rename key**), delete single items; **clear all** for the current storage type (with confirmation).
-- **Duplicate key** handling: overwrite confirmation when saving would collide with an existing key.
-- **Restricted pages** (`chrome://`, `edge://`, `about:`, etc.): shows an error state and disables actions.
+### 方式二：从 GitHub 离线安装
+1. 在 GitHub 项目页右侧 **Releases** 下载最新压缩包并解压。
+2. 打开 Chrome，访问 `chrome://extensions/`，开启右上角 **开发者模式**。
+3. 点击 **加载已解压的扩展程序**，选择**含有 `manifest.json` 的目录**（一般为发布包内的 **`WebStorage-Pro`** 文件夹）。
+4. 安装成功后，可将扩展固定到工具栏；点击图标打开弹窗界面。
 
-### Copy & export
-
-- Click **value** to copy the stored string; click **key** to copy the key.
-- **Copy** toolbar on a row copies a JSON object: `{"key":"value"}` for easy pasting elsewhere.
-- **Export** downloads JSON including timestamp and page URL.
-
-### Add / edit dialog
-
-- **Key** and **Value** fields as usual.
-- Optional **JSON object** field: paste something like `{"myKey":"myValue"}`; on blur or after paste, valid objects fill key/value (first key if multiple; non-string values are serialized with `JSON.stringify`).
-
-### Popup vs Side Panel (pin)
-
-- Click the **pin** icon to **lock** the current tab: opens the extension in the **Chrome Side Panel** and remembers this tab.
-- Multiple tabs can be pinned independently; the side panel **follows the active tab** and refreshes storage data when you switch tabs.
-- Unlocking removes the current tab from the pinned set; the toolbar icon falls back to the normal popup when the active tab is not pinned.
-- With **Lock** enabled on the current tab, **Escape** is intercepted so the side panel does not close accidentally (modals still close with Esc as expected).
-
-### Appearance
-
-- **Dark / Light** theme: defaults to system preference; manual toggle is remembered.
-- Toasts for copy, save, delete, export, and validation feedback.
+> 🔄 更新版本时（针对离线安装），用新包覆盖或重新选择解压目录，并在 `chrome://extensions/` 中对该扩展点击 **重新加载**。
 
 ---
 
-## Implementation notes
+## ✨ 功能概览
 
-- **Manifest V3** with a **service worker** (`scripts/background.js`) for Side Panel options and lock state.
-- **Permissions**: `activeTab`, `scripting`, `storage`, `sidePanel`; **`host_permissions`**: `<all_urls>` so `chrome.scripting` can run on normal web pages.
-- **Data access**: `chrome.scripting.executeScript` runs in the page context to read/write `localStorage` / `sessionStorage`.
-- **Theming**: CSS variables; user theme choice in extension `localStorage`.
+### 存储查看与编辑
+
+- **LocalStorage / SessionStorage** 分栏切换，标签上显示**当前类型的条目数量**。
+- **搜索** Key（实时过滤）、一键清空搜索词；**刷新**按钮从页面重新读取数据。
+- **增删改**：新增、编辑（支持 **修改 Key** 实现重命名）、单条删除；对当前类型 **清空全部**（高风险二次确认）。
+- **重名处理**：保存时若 Key 已存在且与编辑场景冲突，会提示是否**覆盖**。
+- **受限页面**（`chrome://`、`edge://`、`about:` 等）：提示无法访问并禁用操作。
+
+### 复制与导出
+
+- 点击 **Value** 复制值；点击 **Key** 复制键名。
+- 行内 **复制** 按钮：复制完整 JSON 对象 `{"key":"value"}`，便于粘贴到文档或其它工具。
+- **导出**：下载 JSON 文件，包含时间戳与页面 URL。
+
+### 新增 / 编辑弹窗
+
+- 常规 **Key**、**Value** 输入框。
+- 上方可选 **JSON object**：粘贴如 `{"myKey":"myValue"}`，失焦或粘贴后会解析；合法对象会**自动回填**到 Key / Value（多个键时取第一个；非字符串值会用 `JSON.stringify` 再填入 Value）。
+
+### 📌 弹窗与侧边栏（固定）
+
+- 点击 **图钉** 可为**当前标签**开启「固定」：在 **Chrome 侧边栏**中打开本扩展，并记录该标签。
+- 支持**多个标签分别固定**；侧边栏会**跟随当前激活标签**切换，并同步刷新列表与固定状态显示。
+- 取消固定时从当前标签的固定列表中移除；若当前标签未固定，工具栏图标恢复为**普通弹窗**模式。
+- 当前标签处于固定且未打开模态框时，会拦截 **Esc** 以免误关侧边栏（有弹窗时仍优先用 Esc 关闭弹窗）。
+
+### 🌓 外观与反馈
+
+- **深色 / 浅色** 主题：默认跟随系统，手动切换会记住。
+- 复制、保存、删除、导出及 JSON 校验等操作均有 **Toast** 提示。
 
 ---
 
-## Development
+## 🛠️ 实现要点
 
-1. Clone or copy this repo.
-2. In Chrome: `chrome://extensions/` → Developer mode → **Load unpacked** → choose the **`WebStorage-Pro`** directory (must contain `manifest.json`).
-3. After edits, click **Reload** on the extension card.
+### 权限（Manifest V3）
 
-Icons ship as PNG (`icons/icon16.png`, etc.); `icons/icon.svg` is available as a source asset.
+- `activeTab`、`scripting`、`storage`、`sidePanel`
+- `host_permissions`: `<all_urls>`，便于对普通网页注入脚本读写 Storage
+- `background.service_worker`: `scripts/background.js`（侧栏选项、多标签固定状态等）
+
+### 数据读写
+
+使用 `chrome.scripting.executeScript` 在**页面环境**中读取 / 写入 `localStorage`、`sessionStorage`，避免扩展弹窗环境与页面存储隔离的问题。
+
+### 其它
+
+- 主题通过 CSS 变量切换；用户主题偏好保存在扩展的 `localStorage` 中。
+- 删除、覆盖、清空等危险操作使用**自定义确认框**，避免原生 `confirm` 体验不一致。
 
 ---
 
-## Feature checklist
+## 👨‍💻 本地开发
 
-- [x] Manifest V3 + background service worker  
-- [x] Local / Session toggle, counts, search, manual refresh  
-- [x] CRUD, key rename, duplicate overwrite prompt, clear all  
-- [x] Smart copy (value / key / JSON object)  
-- [x] Export JSON  
-- [x] JSON object paste → fill key/value in modal  
-- [x] Pin + Side Panel, per-tab lock state  
-- [x] Dark/Light theme, toasts, custom confirm dialogs  
+1. 获取源码后，在 Chrome 打开 `chrome://extensions/`，开启 **开发者模式**。
+2. **加载已解压的扩展程序**，选择项目中的 **`WebStorage-Pro`** 目录（与 `manifest.json` 同级）。
+3. 修改代码后，在扩展卡片上点击 **重新加载**。
+
+`icons` 下已包含 `icon16.png` / `icon48.png` / `icon128.png`；`icon.svg` 可作为矢量源用于再导出。
+
+---
+
+## ✅ 功能清单
+
+- [x] Manifest V3 + Service Worker 后台脚本  
+- [x] Local / Session 切换、数量角标、搜索、手动刷新  
+- [x] 完整 CRUD、Key 重命名、重名覆盖确认、清空当前类型  
+- [x] 智能复制（值 / 键 / JSON 对象）  
+- [x] 导出 JSON  
+- [x] 弹窗内 JSON 对象粘贴回填 Key / Value  
+- [x] 📌 固定 + 侧边栏、按标签维度的固定状态  
+- [x] 🌓 深色 / 浅色主题、Toast、自定义确认框
