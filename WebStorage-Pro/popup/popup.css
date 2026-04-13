@@ -430,6 +430,10 @@ footer {
   font-family: 'Consolas', 'Monaco', monospace;
 }
 
+.form-group textarea.json-object-input {
+  min-height: 56px;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

@@ -43,6 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
     modal: {
       container: document.getElementById('modal'),
       title: document.getElementById('modal-title'),
+      jsonObjectInput: document.getElementById('item-json-object'),
       keyInput: document.getElementById('item-key'),
       valueInput: document.getElementById('item-value'),
       cancelBtn: document.getElementById('modal-cancel'),
@@ -367,6 +368,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Modal Actions
     elements.modal.cancelBtn.addEventListener('click', closeModal);
     elements.modal.saveBtn.addEventListener('click', saveItem);
+    elements.modal.jsonObjectInput.addEventListener('blur', applyJsonObjectToKeyValue);
+    elements.modal.jsonObjectInput.addEventListener('paste', () => {
+      window.setTimeout(applyJsonObjectToKeyValue, 0);
+    });
     
     // Close modal on outside click
     elements.modal.container.addEventListener('click', (e) => {
@@ -586,11 +591,50 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // Modal & CRUD
+  function valueToStorageString(v) {
+    if (v === undefined) return '';
+    if (v === null) return 'null';
+    if (typeof v === 'string') return v;
+    return JSON.stringify(v);
+  }
+
+  function applyJsonObjectToKeyValue() {
+    const raw = elements.modal.jsonObjectInput.value.trim();
+    if (!raw) return;
+
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      showToast('Invalid JSON');
+      return;
+    }
+
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      showToast('Use a JSON object, e.g. {"key":"value"}');
+      return;
+    }
+
+    const keys = Object.keys(parsed);
+    if (keys.length === 0) {
+      showToast('Object has no keys');
+      return;
+    }
+
+    const k = keys[0];
+    elements.modal.keyInput.value = k;
+    elements.modal.valueInput.value = valueToStorageString(parsed[k]);
+    if (keys.length > 1) {
+      showToast(`Using first of ${keys.length} keys`);
+    }
+  }
+
   function openModal(key = '', value = '') {
     const isEdit = !!key;
     state.editingKey = isEdit ? key : null;
     
     elements.modal.title.textContent = isEdit ? 'Edit Item' : 'Add New Item';
+    elements.modal.jsonObjectInput.value = '';
     elements.modal.keyInput.value = key;
     elements.modal.valueInput.value = value;
     
@@ -630,6 +674,7 @@ document.addEventListener('DOMContentLoaded', () => {
       elements.modal.container._cleanupEsc();
       delete elements.modal.container._cleanupEsc;
     }
+    elements.modal.jsonObjectInput.value = '';
     elements.modal.container.classList.add('hidden');
   }
 
