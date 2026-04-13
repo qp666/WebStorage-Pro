@@ -3,7 +3,7 @@
 
 **WebStorage Pro** 面向前端与全栈开发者，在**当前激活标签页**上可视化查看、编辑 **`localStorage`** 与 **`sessionStorage`**，比反复打开 DevTools「Application」面板更轻量。
 
-<img width="1847" height="758" alt="界面预览" src="[https://github.com/user-attachments/assets/6d62da28-1aaa-4942-91cc-f13317b7c55a](https://github.com/user-attachments/assets/6d62da28-1aaa-4942-91cc-f13317b7c55a)" />
+<img width="1847" height="758" alt="image" src="https://github.com/user-attachments/assets/366a575e-8d03-468f-af62-e5ca1df2da87" />
 
 ---
 
