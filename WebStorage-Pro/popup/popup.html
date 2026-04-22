@@ -56,11 +56,23 @@
         </button>
       </div>
       <div class="toolbar-actions">
+        <button id="select-mode-btn" class="secondary-btn toolbar-btn">Select</button>
         <button id="clear-all-btn" class="danger-btn">
           <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2-2v2"></path></svg>
           Clear Storage
         </button>
       </div>
+    </div>
+
+    <div id="bulk-actions-bar" class="bulk-actions-bar hidden">
+      <label class="bulk-select-all-control" for="bulk-select-all-toggle" title="Select or clear all filtered items">
+        <input id="bulk-select-all-toggle" type="checkbox">
+      </label>
+      <span id="bulk-selected-count">0 selected</span>
+      <button id="bulk-copy-btn" class="secondary-btn toolbar-btn">Copy</button>
+      <button id="bulk-export-btn" class="secondary-btn toolbar-btn">Export</button>
+      <button id="bulk-delete-btn" class="danger-btn toolbar-btn">Delete</button>
+      <button id="bulk-cancel-btn" class="secondary-btn toolbar-btn">Cancel</button>
     </div>
 
     <div id="storage-list" class="storage-list">
@@ -80,17 +92,38 @@
   <div id="modal" class="modal hidden">
     <div class="modal-content">
       <h3 id="modal-title">Add Item</h3>
-      <div class="form-group">
-        <label for="item-json-object">JSON object (optional)</label>
-        <textarea id="item-json-object" class="json-object-input" placeholder='Paste a single object, e.g. {"myKey": "myValue"}' rows="3" spellcheck="false"></textarea>
+      <div class="mode-switch-group">
+        <button id="modal-mode-single" class="mode-switch-btn active" type="button">Single</button>
+        <button id="modal-mode-bulk" class="mode-switch-btn" type="button">Bulk</button>
       </div>
-      <div class="form-group">
-        <label for="item-key">Key</label>
-        <input type="text" id="item-key" placeholder="Enter key">
+
+      <div id="single-editor">
+        <div class="form-group">
+          <label for="item-json-object">JSON object (optional)</label>
+          <textarea id="item-json-object" class="json-object-input" placeholder='Paste a single object, e.g. {"myKey": "myValue"}' rows="3" spellcheck="false"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="item-key">Key</label>
+          <input type="text" id="item-key" placeholder="Enter key">
+        </div>
+        <div class="form-group">
+          <label for="item-value">Value</label>
+          <textarea id="item-value" placeholder="Enter value" rows="5"></textarea>
+        </div>
       </div>
-      <div class="form-group">
-        <label for="item-value">Value</label>
-        <textarea id="item-value" placeholder="Enter value" rows="5"></textarea>
+
+      <div id="bulk-editor" class="hidden">
+        <div class="form-group">
+          <label for="item-bulk-json">JSON object</label>
+          <textarea id="item-bulk-json" class="json-object-input" placeholder='Paste object, e.g. {"k1":"v1","k2":2}' rows="7" spellcheck="false"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="item-bulk-conflict">Conflict handling</label>
+          <select id="item-bulk-conflict">
+            <option value="overwrite">Overwrite existing keys</option>
+            <option value="skip">Skip existing keys</option>
+          </select>
+        </div>
       </div>
       <div class="modal-actions">
         <button id="modal-cancel" class="secondary-btn">Cancel</button>
@@ -111,6 +144,12 @@
     </div>
   </div>
 
+  <script src="popup-config.js"></script>
+  <script src="ui-services.js"></script>
+  <script src="storage-list-controller.js"></script>
+  <script src="modal-controller.js"></script>
+  <script src="storage-service.js"></script>
+  <script src="lock-sync-controller.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

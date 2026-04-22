@@ -1,8 +1,23 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const LOCKED_POPUP_KEY = 'popup_locked_mode';
-  const LOCKED_TAB_IDS_KEY = 'popup_locked_tab_ids';
-  const LEGACY_LOCKED_TAB_ID_KEY = 'popup_locked_tab_id';
+  const popupConfig = window.POPUP_CONFIG || {};
+  const TOAST_MESSAGES = popupConfig.TOAST_MESSAGES || {};
+  const ERROR_MESSAGES = popupConfig.ERROR_MESSAGES || {};
   const SIDEPANEL_VIEW = 'sidepanel';
+  const SEARCH_DEBOUNCE_MS = popupConfig.CONSTANTS?.SEARCH_DEBOUNCE_MS ?? 150;
+  const SIDEPANEL_MIN_SYNC_INTERVAL_MS = popupConfig.CONSTANTS?.SIDEPANEL_MIN_SYNC_INTERVAL_MS ?? 200;
+  const STORAGE_WATCH_INTERVAL_MS = popupConfig.CONSTANTS?.STORAGE_WATCH_INTERVAL_MS ?? 1200;
+  const UNDO_WINDOW_MS = popupConfig.CONSTANTS?.UNDO_WINDOW_MS ?? 10000;
+
+  function getMessage(key, fallback) {
+    return TOAST_MESSAGES[key] || fallback;
+  }
+
+  function getErrorMessage(error, fallback) {
+    if (error && typeof error === 'object' && typeof error.code === 'string') {
+      return ERROR_MESSAGES[error.code] || fallback;
+    }
+    return fallback;
+  }
 
   // State
   const state = {
@@ -12,12 +27,20 @@ document.addEventListener('DOMContentLoaded', () => {
       session: {}
     },
     searchQuery: '',
-    editingKey: null, // Track original key for renaming
-    isLocked: false,
-    lockedTabIds: [],
+    isSelectionMode: false,
+    selectedKeys: [],
+    selectableCount: 0,
+    selectedVisibleCount: 0,
+    allVisibleSelected: false,
+    watchTimer: null,
+    watchInFlight: false,
+    activeChangeSet: null,
+    changeResetTimer: null,
+    undoEntry: null,
+    undoTimer: null,
     currentTabId: null,
     currentTabUrl: null,
-    tabSyncTimer: null
+    searchDebounceTimer: null
   };
 
   // DOM Elements
@@ -33,6 +56,14 @@ document.addEventListener('DOMContentLoaded', () => {
     clearSearchBtn: document.getElementById('clear-search'),
     badgeCount: document.getElementById('item-count'), // Keep reference but unused in new design
     clearAllBtn: document.getElementById('clear-all-btn'),
+    selectModeBtn: document.getElementById('select-mode-btn'),
+    bulkActionsBar: document.getElementById('bulk-actions-bar'),
+    bulkSelectAllToggle: document.getElementById('bulk-select-all-toggle'),
+    bulkSelectedCount: document.getElementById('bulk-selected-count'),
+    bulkCopyBtn: document.getElementById('bulk-copy-btn'),
+    bulkExportBtn: document.getElementById('bulk-export-btn'),
+    bulkDeleteBtn: document.getElementById('bulk-delete-btn'),
+    bulkCancelBtn: document.getElementById('bulk-cancel-btn'),
     refreshBtn: document.getElementById('refresh-btn'),
     exportBtn: document.getElementById('export-btn'),
     pinBtn: document.getElementById('pin-btn'),
@@ -43,9 +74,15 @@ document.addEventListener('DOMContentLoaded', () => {
     modal: {
       container: document.getElementById('modal'),
       title: document.getElementById('modal-title'),
+      modeSingleBtn: document.getElementById('modal-mode-single'),
+      modeBulkBtn: document.getElementById('modal-mode-bulk'),
+      singleEditor: document.getElementById('single-editor'),
+      bulkEditor: document.getElementById('bulk-editor'),
       jsonObjectInput: document.getElementById('item-json-object'),
       keyInput: document.getElementById('item-key'),
       valueInput: document.getElementById('item-value'),
+      bulkJsonInput: document.getElementById('item-bulk-json'),
+      bulkConflictSelect: document.getElementById('item-bulk-conflict'),
       cancelBtn: document.getElementById('modal-cancel'),
       saveBtn: document.getElementById('modal-save')
     },
@@ -58,17 +95,248 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
+  const uiServices = createUiServices({
+    confirmElements: elements.confirm
+  });
+  const { showToast, showConfirm } = uiServices;
+
+  const listController = createStorageListController({
+    listElement: elements.list,
+    showToast,
+    escapeHtml: uiServices.escapeHtml,
+    messages: TOAST_MESSAGES,
+    onEdit: (key, value) => modalController.open(key, value),
+    onDelete: (key) => deleteItem(key),
+    onSelectionChange: handleSelectionChange
+  });
+
+  const modalController = createModalFormController({
+    modalElements: elements.modal,
+    confirmContainer: elements.confirm.container,
+    showToast,
+    messages: TOAST_MESSAGES,
+    onSubmit: handleModalSubmit
+  });
+  const storageService = createStorageService();
+  const lockSyncController = createLockSyncController({
+    lockButton: elements.pinBtn,
+    modalContainer: elements.modal.container,
+    confirmContainer: elements.confirm.container,
+    showToast,
+    storageService,
+    isSidePanelMode,
+    sidePanelView: SIDEPANEL_VIEW,
+    minSyncIntervalMs: SIDEPANEL_MIN_SYNC_INTERVAL_MS,
+    getErrorMessage,
+    messages: TOAST_MESSAGES,
+    getCurrentTabContext: () => ({
+      tabId: state.currentTabId,
+      url: state.currentTabUrl
+    }),
+    onActiveTabChanged: async () => {
+      await loadData();
+    }
+  });
+
   // Initialize
   init();
 
   async function init() {
     await initLayoutMode();
-    await initLockMode();
+    await lockSyncController.initLockMode();
     initTheme();
     bindEvents();
 
     await loadData();
-    initSidePanelAutoSync();
+    startStorageWatcher();
+    lockSyncController.initSidePanelAutoSync();
+  }
+
+  function detectStorageChanges(prevData, nextData) {
+    const prevEntries = prevData || {};
+    const nextEntries = nextData || {};
+    const addedKeys = [];
+    const updatedKeys = [];
+    const deletedKeys = [];
+
+    const prevKeys = Object.keys(prevEntries);
+    const nextKeys = Object.keys(nextEntries);
+    const prevKeySet = new Set(prevKeys);
+    const nextKeySet = new Set(nextKeys);
+
+    nextKeys.forEach((key) => {
+      if (!prevKeySet.has(key)) {
+        addedKeys.push(key);
+        return;
+      }
+      if (prevEntries[key] !== nextEntries[key]) {
+        updatedKeys.push(key);
+      }
+    });
+
+    prevKeys.forEach((key) => {
+      if (!nextKeySet.has(key)) {
+        deletedKeys.push(key);
+      }
+    });
+
+    return { addedKeys, updatedKeys, deletedKeys };
+  }
+
+  function hasAnyChange(changeSet) {
+    return (changeSet.addedKeys.length + changeSet.updatedKeys.length + changeSet.deletedKeys.length) > 0;
+  }
+
+  function getPreferredScrollKey(changeSet) {
+    if (!changeSet) return null;
+    if (Array.isArray(changeSet.addedKeys) && changeSet.addedKeys.length > 0) {
+      return changeSet.addedKeys[0];
+    }
+    if (Array.isArray(changeSet.updatedKeys) && changeSet.updatedKeys.length > 0) {
+      return changeSet.updatedKeys[0];
+    }
+    return null;
+  }
+
+  function applyTransientChanges(changeSet, options = {}) {
+    if (!changeSet || !hasAnyChange(changeSet)) return;
+    const { scrollKey = null } = options;
+    state.activeChangeSet = {
+      addedKeys: Array.isArray(changeSet.addedKeys) ? changeSet.addedKeys : [],
+      updatedKeys: Array.isArray(changeSet.updatedKeys) ? changeSet.updatedKeys : [],
+      deletedKeys: Array.isArray(changeSet.deletedKeys) ? changeSet.deletedKeys : []
+    };
+    renderCurrentList();
+    const finalScrollKey = scrollKey || getPreferredScrollKey(state.activeChangeSet);
+    if (finalScrollKey) {
+      // Make sure the changed item is visible with its transient style.
+      window.setTimeout(() => {
+        listController.scrollToItem(finalScrollKey);
+      }, 20);
+    }
+  }
+
+  function clearUndoEntry() {
+    state.undoEntry = null;
+    if (state.undoTimer) {
+      clearTimeout(state.undoTimer);
+      state.undoTimer = null;
+    }
+  }
+
+  function withUndoHint(message) {
+    return `${message} Click Undo to restore.`;
+  }
+
+  function registerUndo({ storageType, beforeData, successMessage }) {
+    const undoId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const expiresAt = Date.now() + UNDO_WINDOW_MS;
+    state.undoEntry = {
+      id: undoId,
+      storageType,
+      beforeData: { ...(beforeData || {}) },
+      expiresAt
+    };
+    if (state.undoTimer) {
+      clearTimeout(state.undoTimer);
+      state.undoTimer = null;
+    }
+    state.undoTimer = window.setTimeout(() => {
+      if (state.undoEntry && state.undoEntry.id === undoId) {
+        state.undoEntry = null;
+        state.undoTimer = null;
+      }
+    }, UNDO_WINDOW_MS);
+
+    showToast(successMessage, 'success', {
+      actionText: getMessage('UNDO_ACTION', 'Undo'),
+      duration: UNDO_WINDOW_MS,
+      onAction: async () => {
+        await applyUndo(undoId);
+      }
+    });
+  }
+
+  async function applyUndo(undoId) {
+    if (!state.undoEntry || state.undoEntry.id !== undoId) {
+      showToast(getMessage('UNDO_EXPIRED', 'Undo expired'), 'info');
+      return;
+    }
+    if (Date.now() > state.undoEntry.expiresAt) {
+      clearUndoEntry();
+      showToast(getMessage('UNDO_EXPIRED', 'Undo expired'), 'info');
+      return;
+    }
+
+    const { storageType, beforeData } = state.undoEntry;
+    clearUndoEntry();
+    const currentData = { ...(state.storageData[storageType] || {}) };
+    try {
+      const tab = await storageService.getActiveTab();
+      if (!tab || typeof tab.id !== 'number') {
+        showToast(getMessage('NO_ACTIVE_TAB', 'No active tab found'), 'error');
+        return;
+      }
+      await storageService.replaceStorageData(tab.id, storageType, beforeData);
+      await loadData();
+      if (state.currentType === storageType) {
+        const changeSet = detectStorageChanges(currentData, beforeData);
+        applyTransientChanges(changeSet);
+      }
+      showToast(getMessage('UNDO_SUCCESS', 'Changes reverted'), 'success');
+    } catch (error) {
+      console.error('Failed to undo:', error);
+      showToast(getMessage('UNDO_FAILED', 'Failed to undo'), 'error');
+    }
+  }
+
+  function scheduleChangeReset() {
+    if (state.changeResetTimer) {
+      clearTimeout(state.changeResetTimer);
+      state.changeResetTimer = null;
+    }
+
+    state.changeResetTimer = window.setTimeout(() => {
+      state.activeChangeSet = null;
+      state.changeResetTimer = null;
+      renderCurrentList();
+    }, 2000);
+  }
+
+  function startStorageWatcher() {
+    if (state.watchTimer) {
+      clearInterval(state.watchTimer);
+      state.watchTimer = null;
+    }
+
+    state.watchTimer = window.setInterval(async () => {
+      if (state.watchInFlight) return;
+      if (document.hidden) return;
+      if (!state.currentTabId || elements.modal.container.classList.contains('hidden') === false) return;
+
+      state.watchInFlight = true;
+      try {
+        const tab = await storageService.getActiveTab();
+        if (!tab || typeof tab.id !== 'number') return;
+        if (storageService.isRestrictedUrl(tab.url)) return;
+        if (state.currentTabId !== tab.id) return;
+
+        const latestData = await storageService.readStorageData(tab.id);
+        const localChanges = detectStorageChanges(state.storageData.local, latestData.local);
+        const sessionChanges = detectStorageChanges(state.storageData.session, latestData.session);
+        const hasChanges = hasAnyChange(localChanges) || hasAnyChange(sessionChanges);
+        if (!hasChanges) return;
+
+        state.storageData = latestData;
+        const currentChangeSet = state.currentType === 'local' ? localChanges : sessionChanges;
+        updateTabBadges();
+        applyTransientChanges(currentChangeSet);
+      } catch {
+        // Silent fail for background watch to avoid noisy toasts.
+      } finally {
+        state.watchInFlight = false;
+      }
+    }, STORAGE_WATCH_INTERVAL_MS);
   }
 
   async function initLayoutMode() {
@@ -80,183 +348,6 @@ document.addEventListener('DOMContentLoaded', () => {
   function isSidePanelMode() {
     const params = new URLSearchParams(window.location.search);
     return params.get('view') === SIDEPANEL_VIEW;
-  }
-
-  async function initLockMode() {
-    await refreshLockStateFromStorage();
-
-    // In lock mode, intercept ESC at page level when no modal is open.
-    document.addEventListener('keydown', (e) => {
-      const modalVisible = !elements.modal.container.classList.contains('hidden');
-      const confirmVisible = !elements.confirm.container.classList.contains('hidden');
-
-      if (state.isLocked && e.key === 'Escape' && !modalVisible && !confirmVisible) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
-    }, true);
-  }
-
-  function normalizeLockedTabIds(data) {
-    const rawList = Array.isArray(data[LOCKED_TAB_IDS_KEY]) ? data[LOCKED_TAB_IDS_KEY] : [];
-    const validList = rawList.filter((id) => typeof id === 'number');
-    if (validList.length > 0) {
-      return [...new Set(validList)];
-    }
-
-    const legacyId = data[LEGACY_LOCKED_TAB_ID_KEY];
-    if (typeof legacyId === 'number') {
-      return [legacyId];
-    }
-
-    return [];
-  }
-
-  function updateLockButton() {
-    elements.pinBtn.classList.toggle('active', state.isLocked);
-    elements.pinBtn.title = state.isLocked ? 'Unlock popup' : 'Lock popup';
-  }
-
-  async function refreshLockStateFromStorage() {
-    const [stored, activeTab] = await Promise.all([
-      chrome.storage.local.get([LOCKED_POPUP_KEY, LOCKED_TAB_IDS_KEY, LEGACY_LOCKED_TAB_ID_KEY]),
-      chrome.tabs.query({ active: true, currentWindow: true })
-    ]);
-    const currentTab = activeTab[0];
-    const currentTabId = currentTab && typeof currentTab.id === 'number' ? currentTab.id : null;
-
-    const lockedTabIds = normalizeLockedTabIds(stored);
-    state.lockedTabIds = lockedTabIds;
-    const globalLocked = typeof stored[LOCKED_POPUP_KEY] === 'boolean'
-      ? stored[LOCKED_POPUP_KEY]
-      : localStorage.getItem(LOCKED_POPUP_KEY) === '1';
-
-    state.isLocked = globalLocked && currentTabId !== null && lockedTabIds.includes(currentTabId);
-    updateLockButton();
-  }
-
-  async function toggleLockMode() {
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const activeTabId = tab && typeof tab.id === 'number' ? tab.id : null;
-    if (activeTabId === null) {
-      showToast('No active tab found');
-      return;
-    }
-    const shouldLock = !state.isLocked;
-
-    if (shouldLock) {
-      // Open side panel first while click gesture is still active.
-      const opened = await openSidePanel(activeTabId);
-      if (opened) {
-        const nextLockedTabIds = [...new Set([...state.lockedTabIds, activeTabId])];
-        state.isLocked = true;
-        state.lockedTabIds = nextLockedTabIds;
-        localStorage.setItem(LOCKED_POPUP_KEY, '1');
-        await chrome.storage.local.set({
-          [LOCKED_POPUP_KEY]: true,
-          [LOCKED_TAB_IDS_KEY]: nextLockedTabIds,
-          [LEGACY_LOCKED_TAB_ID_KEY]: null
-        });
-        updateLockButton();
-        showToast('Lock enabled (Side Panel)');
-        closePopupIfNeeded();
-      } else {
-        showToast('Failed to open Side Panel');
-      }
-    } else {
-      const nextLockedTabIds = state.lockedTabIds.filter((id) => id !== activeTabId);
-      state.isLocked = false;
-      state.lockedTabIds = nextLockedTabIds;
-      const hasAnyLockedTab = nextLockedTabIds.length > 0;
-      localStorage.setItem(LOCKED_POPUP_KEY, hasAnyLockedTab ? '1' : '0');
-      await chrome.storage.local.set({
-        [LOCKED_POPUP_KEY]: hasAnyLockedTab,
-        [LOCKED_TAB_IDS_KEY]: nextLockedTabIds,
-        [LEGACY_LOCKED_TAB_ID_KEY]: null
-      });
-      updateLockButton();
-      await closeSidePanelIfNeeded();
-      showToast('Lock disabled');
-    }
-  }
-
-  async function openSidePanel(targetTabId = null) {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      const resolvedTabId = typeof targetTabId === 'number'
-        ? targetTabId
-        : (tab && typeof tab.id === 'number' ? tab.id : null);
-      if (resolvedTabId === null) return false;
-
-      await chrome.sidePanel.setOptions({
-        tabId: resolvedTabId,
-        path: `popup/popup.html?view=${SIDEPANEL_VIEW}`,
-        enabled: true
-      });
-      await chrome.sidePanel.open({ tabId: resolvedTabId });
-      return true;
-    } catch (error) {
-      console.error('Failed to open side panel:', error);
-      return false;
-    }
-  }
-
-  function initSidePanelAutoSync() {
-    if (!isSidePanelMode()) return;
-
-    const syncTabChange = async () => {
-      try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab) return;
-
-        const nextTabId = typeof tab.id === 'number' ? tab.id : null;
-        const nextTabUrl = typeof tab.url === 'string' ? tab.url : null;
-        const changed = nextTabId !== state.currentTabId || nextTabUrl !== state.currentTabUrl;
-
-        if (changed) {
-          await refreshLockStateFromStorage();
-          await loadData();
-        }
-      } catch (error) {
-        console.error('Failed to sync active tab in side panel:', error);
-      }
-    };
-
-    // Poll active tab changes because side panel stays mounted across tab switches.
-    state.tabSyncTimer = window.setInterval(syncTabChange, 700);
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        syncTabChange();
-      }
-    });
-    window.addEventListener('focus', syncTabChange);
-    window.addEventListener('beforeunload', () => {
-      if (state.tabSyncTimer) {
-        clearInterval(state.tabSyncTimer);
-        state.tabSyncTimer = null;
-      }
-    });
-  }
-
-  function closePopupIfNeeded() {
-    if (isSidePanelMode()) return;
-    // In action popup context, close after handing off to side panel.
-    window.close();
-  }
-
-  async function closeSidePanelIfNeeded() {
-    if (!isSidePanelMode()) return;
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab || typeof tab.id !== 'number') return;
-
-      // Disable side panel on current tab to force close.
-      await chrome.sidePanel.setOptions({ tabId: tab.id, enabled: false });
-    } catch (error) {
-      console.error('Failed to close side panel:', error);
-    } finally {
-      window.close();
-    }
   }
 
   function initTheme() {
@@ -302,7 +393,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function bindEvents() {
     // Lock Toggle
-    elements.pinBtn.addEventListener('click', toggleLockMode);
+    lockSyncController.bindEvents();
 
     // Theme Toggle
     elements.themeBtn.addEventListener('click', toggleTheme);
@@ -315,14 +406,24 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.searchInput.addEventListener('input', (e) => {
       state.searchQuery = e.target.value.trim().toLowerCase();
       toggleClearBtn();
-      renderList();
+      if (state.searchDebounceTimer) {
+        clearTimeout(state.searchDebounceTimer);
+      }
+      state.searchDebounceTimer = window.setTimeout(() => {
+        renderCurrentList();
+        state.searchDebounceTimer = null;
+      }, SEARCH_DEBOUNCE_MS);
     });
 
     elements.clearSearchBtn.addEventListener('click', () => {
+      if (state.searchDebounceTimer) {
+        clearTimeout(state.searchDebounceTimer);
+        state.searchDebounceTimer = null;
+      }
       elements.searchInput.value = '';
       state.searchQuery = '';
       toggleClearBtn();
-      renderList();
+      renderCurrentList();
     });
 
     // Refresh
@@ -333,38 +434,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Clear All
     elements.clearAllBtn.addEventListener('click', clearAllStorage);
+    elements.selectModeBtn.addEventListener('click', () => {
+      listController.setSelectionMode(!state.isSelectionMode);
+      renderCurrentList();
+    });
+    elements.bulkCancelBtn.addEventListener('click', () => {
+      listController.setSelectionMode(false);
+      renderCurrentList();
+    });
+    elements.bulkSelectAllToggle.addEventListener('change', (e) => {
+      if (e.target.checked) {
+        listController.selectAllFiltered();
+      } else {
+        listController.clearSelection();
+      }
+      renderCurrentList();
+    });
+    elements.bulkCopyBtn.addEventListener('click', copySelectedItems);
+    elements.bulkExportBtn.addEventListener('click', exportSelectedItems);
+    elements.bulkDeleteBtn.addEventListener('click', deleteSelectedItems);
 
     // Add Item
-    elements.addBtn.addEventListener('click', () => openModal());
-
-    // Modal Actions
-    elements.modal.cancelBtn.addEventListener('click', closeModal);
-    elements.modal.saveBtn.addEventListener('click', saveItem);
-    elements.modal.jsonObjectInput.addEventListener('blur', applyJsonObjectToKeyValue);
-    elements.modal.jsonObjectInput.addEventListener('paste', () => {
-      window.setTimeout(applyJsonObjectToKeyValue, 0);
-    });
-    elements.modal.keyInput.addEventListener('keydown', (e) => {
-      if (e.isComposing || e.key !== 'Enter' || e.shiftKey) return;
-      e.preventDefault();
-      if (!elements.modal.keyInput.value.trim()) return;
-      elements.modal.valueInput.focus();
-    });
-    elements.modal.valueInput.addEventListener('keydown', (e) => {
-      if (e.isComposing || e.key !== 'Enter' || e.shiftKey) return;
-      e.preventDefault();
-      saveItem();
-    });
-    elements.modal.jsonObjectInput.addEventListener('keydown', (e) => {
-      if (e.isComposing || e.key !== 'Enter' || e.shiftKey) return;
-      e.preventDefault();
-      saveItem();
-    });
-    
-    // Close modal on outside click
-    elements.modal.container.addEventListener('click', (e) => {
-      if (e.target === elements.modal.container) closeModal();
-    });
+    elements.addBtn.addEventListener('click', () => modalController.open());
+    modalController.bindEvents();
   }
 
   function toggleClearBtn() {
@@ -376,6 +468,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function switchTab(type) {
+    if (state.currentType !== type && state.isSelectionMode) {
+      listController.setSelectionMode(false);
+    }
     state.currentType = type;
     
     // Update Tab UI
@@ -387,7 +482,7 @@ document.addEventListener('DOMContentLoaded', () => {
       elements.tabs.session.classList.add('active');
     }
 
-    renderList();
+    renderCurrentList();
   }
 
   async function loadData(showToastOnSuccess = false) {
@@ -398,9 +493,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await storageService.getActiveTab();
       if (!tab) {
-        showError('No active tab found.');
+        showError(getMessage('NO_ACTIVE_TAB', 'No active tab found'));
         return;
       }
 
@@ -408,61 +503,24 @@ document.addEventListener('DOMContentLoaded', () => {
       state.currentTabUrl = typeof tab.url === 'string' ? tab.url : null;
 
       // Check if we can script this tab
-      if (tab.url.startsWith('chrome://') || tab.url.startsWith('edge://') || tab.url.startsWith('about:')) {
-        showError('Cannot access storage on system pages.');
+      if (storageService.isRestrictedUrl(tab.url)) {
+        showError(getMessage('RESTRICTED_PAGE', 'Cannot access storage on system pages.'));
         return;
       }
 
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: () => {
-          return {
-            local: { ...localStorage },
-            session: { ...sessionStorage }
-          };
-        }
-      });
-
-      if (results && results[0] && results[0].result) {
-        state.storageData = results[0].result;
-        updateTabBadges();
-        renderList();
-        if (showToastOnSuccess) {
-          showToast('Refreshed successfully');
-        }
-      } else {
-        state.storageData = { local: {}, session: {} };
-        updateTabBadges();
-        renderList();
+      state.storageData = await storageService.readStorageData(tab.id);
+      setUiInteractive(true);
+      updateTabBadges();
+      renderCurrentList();
+      if (showToastOnSuccess) {
+        showToast(getMessage('REFRESHED_SUCCESS', 'Refreshed successfully'), 'success');
       }
     } catch (error) {
       console.error('Failed to load data:', error);
-      showError('Failed to load storage data. Page might be restricted.');
+      showError(getErrorMessage(error, getMessage('STORAGE_LOAD_FAILED', 'Failed to load storage data. Page might be restricted.')));
     } finally {
       setLoading(false);
     }
-  }
-
-  function scrollToItem(key) {
-    // Need to wait for DOM update after renderList
-    setTimeout(() => {
-      // Iterate over storage-item and check the key inside
-      const items = document.querySelectorAll('.storage-item');
-      for (const row of items) {
-        const keyEl = row.querySelector('.item-key');
-        if (keyEl && keyEl.textContent === key) {
-          row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          
-          row.classList.add('highlight-item');
-          
-          // Remove class after animation ends to clean up
-          setTimeout(() => {
-            row.classList.remove('highlight-item');
-          }, 2000);
-          break;
-        }
-      }
-    }, 150); // Increased timeout slightly to ensure render is complete
   }
 
   function setLoading(isLoading) {
@@ -473,19 +531,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function showError(msg) {
     elements.list.innerHTML = `<div class="empty-state" style="color: var(--danger-color)">${msg}</div>`;
-    
-    // Disable all interactive elements
-    elements.addBtn.disabled = true;
-    elements.clearAllBtn.disabled = true;
-    elements.exportBtn.disabled = true;
-    elements.searchInput.disabled = true;
-    elements.clearSearchBtn.disabled = true;
-    
-    // Disable tabs logic
-    elements.tabs.local.style.pointerEvents = 'none';
-    elements.tabs.session.style.pointerEvents = 'none';
-    elements.tabs.local.style.opacity = '0.5';
-    elements.tabs.session.style.opacity = '0.5';
+    setUiInteractive(false);
+  }
+
+  function setUiInteractive(enabled) {
+    elements.addBtn.disabled = !enabled;
+    elements.clearAllBtn.disabled = !enabled;
+    elements.exportBtn.disabled = !enabled;
+    elements.selectModeBtn.disabled = !enabled;
+    elements.searchInput.disabled = !enabled;
+    elements.clearSearchBtn.disabled = !enabled;
+    elements.bulkCopyBtn.disabled = !enabled || state.selectedKeys.length === 0;
+    elements.bulkExportBtn.disabled = !enabled || state.selectedKeys.length === 0;
+    elements.bulkDeleteBtn.disabled = !enabled || state.selectedKeys.length === 0;
+    elements.bulkSelectAllToggle.disabled = !enabled || state.selectableCount === 0;
+    elements.bulkSelectAllToggle.checked = enabled && state.selectableCount > 0 && state.allVisibleSelected;
+    elements.bulkSelectAllToggle.indeterminate = enabled
+      && state.selectedVisibleCount > 0
+      && !state.allVisibleSelected;
+    elements.bulkCancelBtn.disabled = !enabled;
+
+    elements.tabs.local.style.pointerEvents = enabled ? 'auto' : 'none';
+    elements.tabs.session.style.pointerEvents = enabled ? 'auto' : 'none';
+    elements.tabs.local.style.opacity = enabled ? '1' : '0.5';
+    elements.tabs.session.style.opacity = enabled ? '1' : '0.5';
   }
 
   function updateTabBadges() {
@@ -496,196 +565,170 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.tabs.badgeSession.textContent = `${sessionCount} items`;
   }
 
-  function renderList() {
+  function renderCurrentList() {
     const data = state.storageData[state.currentType] || {};
-    const container = elements.list;
-    container.innerHTML = '';
-
-    const entries = Object.entries(data);
-    const filteredEntries = entries.filter(([key]) => 
-      key.toLowerCase().includes(state.searchQuery)
-    );
-
-    // badgeCount is removed from UI, no need to update it
-    
-    if (entries.length === 0) {
-      container.innerHTML = '<div class="empty-state">No items found</div>';
-      return;
+    const changeSet = state.activeChangeSet;
+    listController.render(data, state.searchQuery, changeSet || undefined);
+    if (changeSet && hasAnyChange(changeSet)) {
+      scheduleChangeReset();
     }
-
-    if (filteredEntries.length === 0) {
-      container.innerHTML = '<div class="empty-state">No matches found</div>';
-      return;
-    }
-
-
-
-    filteredEntries.forEach(([key, value]) => {
-      const itemEl = createItemElement(key, value);
-      container.appendChild(itemEl);
-    });
+    updateBulkActionsUi();
   }
 
-  function createItemElement(key, value) {
-    const div = document.createElement('div');
-    div.className = 'storage-item';
-    
-    // Copy Logic
-    const copyValue = () => {
-      navigator.clipboard.writeText(value).then(() => {
-        showToast('Value copied!');
-      });
-    };
-
-    const copyKey = () => {
-      navigator.clipboard.writeText(key).then(() => {
-        showToast('Key copied!');
-      });
-    };
-
-    const copyItem = () => {
-      const itemString = JSON.stringify({ [key]: value }, null, 2);
-      navigator.clipboard.writeText(itemString).then(() => {
-        showToast('Item copied!');
-      });
-    };
-
-    // Icons (Edit, Delete, Copy)
-    const copyIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
-    const editIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>`;
-    const deleteIcon = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2-2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>`;
-
-    div.innerHTML = `
-      <div class="item-content">
-        <div class="item-key" title="Click to copy key">${escapeHtml(key)}</div>
-        <div class="item-value" title="Click to copy">${escapeHtml(value)}</div>
-      </div>
-      <div class="item-actions">
-        <button class="icon-btn btn-copy" title="Copy">${copyIcon}</button>
-        <button class="icon-btn btn-edit" title="Edit">${editIcon}</button>
-        <button class="icon-btn btn-delete" title="Delete">${deleteIcon}</button>
-      </div>
-    `;
-
-    // Bind events
-    div.querySelector('.item-key').addEventListener('click', copyKey);
-    div.querySelector('.item-value').addEventListener('click', copyValue);
-    div.querySelector('.btn-copy').addEventListener('click', copyItem);
-    
-    div.querySelector('.btn-edit').addEventListener('click', () => openModal(key, value));
-    div.querySelector('.btn-delete').addEventListener('click', () => deleteItem(key));
-
-    return div;
+  function handleSelectionChange({
+    isSelectionMode,
+    selectedCount,
+    selectedKeys,
+    selectableCount = 0,
+    selectedVisibleCount = 0,
+    allVisibleSelected = false
+  }) {
+    state.isSelectionMode = isSelectionMode;
+    state.selectedKeys = selectedKeys;
+    state.selectableCount = selectableCount;
+    state.selectedVisibleCount = selectedVisibleCount;
+    state.allVisibleSelected = allVisibleSelected;
+    updateBulkActionsUi(selectedCount);
   }
 
-  // Modal & CRUD
-  function valueToStorageString(v) {
-    if (v === undefined) return '';
-    if (v === null) return 'null';
-    if (typeof v === 'string') return v;
-    return JSON.stringify(v);
+  function updateBulkActionsUi(selectedCount = state.selectedKeys.length) {
+    elements.selectModeBtn.textContent = state.isSelectionMode
+      ? getMessage('SELECT_MODE_ACTIVE', 'Selecting...')
+      : getMessage('SELECT_MODE', 'Select');
+    elements.bulkActionsBar.classList.toggle('hidden', !state.isSelectionMode);
+    elements.bulkSelectedCount.textContent = `${selectedCount} ${getMessage('SELECTED_SUFFIX', 'selected')}`;
+    const disabled = selectedCount === 0;
+    elements.bulkCopyBtn.disabled = disabled;
+    elements.bulkExportBtn.disabled = disabled;
+    elements.bulkDeleteBtn.disabled = disabled;
+    elements.bulkSelectAllToggle.disabled = state.selectableCount === 0;
+    elements.bulkSelectAllToggle.checked = state.selectableCount > 0 && state.allVisibleSelected;
+    elements.bulkSelectAllToggle.indeterminate = state.selectedVisibleCount > 0 && !state.allVisibleSelected;
   }
 
-  function applyJsonObjectToKeyValue() {
-    const raw = elements.modal.jsonObjectInput.value.trim();
-    if (!raw) return;
-
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      showToast('Invalid JSON');
-      return;
-    }
-
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      showToast('Use a JSON object, e.g. {"key":"value"}');
-      return;
-    }
-
-    const keys = Object.keys(parsed);
-    if (keys.length === 0) {
-      showToast('Object has no keys');
-      return;
-    }
-
-    const k = keys[0];
-    elements.modal.keyInput.value = k;
-    elements.modal.valueInput.value = valueToStorageString(parsed[k]);
-    if (keys.length > 1) {
-      showToast(`Using first of ${keys.length} keys`);
-    }
-  }
-
-  function openModal(key = '', value = '') {
-    const isEdit = !!key;
-    state.editingKey = isEdit ? key : null;
-    
-    elements.modal.title.textContent = isEdit ? 'Edit Item' : 'Add New Item';
-    elements.modal.jsonObjectInput.value = '';
-    elements.modal.keyInput.value = key;
-    elements.modal.valueInput.value = value;
-    
-    // Allow editing key even in edit mode
-    elements.modal.keyInput.disabled = false;
-
-    elements.modal.container.classList.remove('hidden');
-    
-    if (isEdit) {
-      elements.modal.valueInput.focus();
-    } else {
-      elements.modal.jsonObjectInput.focus();
-    }
-
-    const onEsc = (e) => {
-      if (e.key === 'Escape') {
-        // Only close if confirm modal is NOT open
-        if (!elements.confirm.container.classList.contains('hidden')) return;
-
-        e.stopPropagation();
-        e.preventDefault();
-        closeModal();
+  function tryCopyText(text, successMessage) {
+    const fallbackCopy = () => {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.top = '-9999px';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      if (!copied) {
+        throw new Error('execCommand copy failed');
       }
     };
-    
-    // Clean up previous listener if any
-    if (elements.modal.container._cleanupEsc) {
-      elements.modal.container._cleanupEsc();
-    }
-    
-    document.addEventListener('keydown', onEsc);
-    elements.modal.container._cleanupEsc = () => document.removeEventListener('keydown', onEsc);
+
+    return Promise.resolve()
+      .then(async () => {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+          await navigator.clipboard.writeText(text);
+        } else {
+          fallbackCopy();
+        }
+      })
+      .catch(() => {
+        fallbackCopy();
+      })
+      .then(() => showToast(successMessage, 'success'))
+      .catch((error) => {
+        console.error('Bulk copy failed:', error);
+        showToast(getMessage('COPY_FAILED', 'Copy failed'), 'error');
+      });
   }
 
-  function closeModal() {
-    if (elements.modal.container._cleanupEsc) {
-      elements.modal.container._cleanupEsc();
-      delete elements.modal.container._cleanupEsc;
-    }
-    elements.modal.jsonObjectInput.value = '';
-    elements.modal.container.classList.add('hidden');
+  function getSelectedEntries() {
+    return listController.getSelectedEntries();
   }
 
-  async function saveItem() {
-    const newKey = elements.modal.keyInput.value.trim();
-    const value = elements.modal.valueInput.value;
-    const normalizedValue = value.trim();
-    const oldKey = state.editingKey;
+  function copySelectedItems() {
+    const entries = getSelectedEntries();
+    if (entries.length === 0) return;
+    const payload = Object.fromEntries(entries);
+    const text = JSON.stringify(payload, null, 2);
+    tryCopyText(text, getMessage('COPY_SUCCESS_SELECTED', 'Selected items copied!'));
+  }
 
-    if (!newKey) {
-      showToast('Key cannot be empty');
-      elements.modal.keyInput.focus();
-      return;
+  function exportSelectedItems() {
+    const entries = getSelectedEntries();
+    if (entries.length === 0) return;
+    const data = {
+      timestamp: new Date().toISOString(),
+      type: state.currentType,
+      url: state.currentTabUrl || 'unknown',
+      items: Object.fromEntries(entries)
+    };
+
+    const jsonString = JSON.stringify(data, null, 2);
+    const blob = new Blob([jsonString], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `webstorage-pro-selected-${state.currentType}-${new Date().getTime()}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast(getMessage('EXPORT_SUCCESS', 'Exported successfully'), 'success');
+  }
+
+  async function deleteSelectedItems() {
+    const entries = getSelectedEntries();
+    if (entries.length === 0) return;
+    const keys = entries.map(([key]) => key);
+    const confirmMessageFactory = TOAST_MESSAGES.DELETE_SELECTED_CONFIRM;
+    const confirmMessage = typeof confirmMessageFactory === 'function'
+      ? confirmMessageFactory(keys.length)
+      : `Delete ${keys.length} selected items?`;
+    const confirmed = await showConfirm(
+      getMessage('DELETE_SELECTED_TITLE', 'Delete Selected'),
+      confirmMessage,
+      getMessage('DELETE_ACTION', 'Delete'),
+      true
+    );
+    if (!confirmed) return;
+
+    try {
+      const type = state.currentType;
+      const beforeData = { ...(state.storageData[type] || {}) };
+      const tab = await storageService.getActiveTab();
+      if (!tab || typeof tab.id !== 'number') {
+        showToast(getMessage('NO_ACTIVE_TAB', 'No active tab found'), 'error');
+        return;
+      }
+      await storageService.removeItems(tab.id, type, keys);
+      listController.clearSelection();
+      listController.setSelectionMode(false);
+      const deleteSuccessFactory = TOAST_MESSAGES.DELETE_SELECTED_SUCCESS;
+      const deleteSuccessMessage = typeof deleteSuccessFactory === 'function'
+        ? deleteSuccessFactory(keys.length)
+        : `Deleted ${keys.length} items`;
+      await loadData();
+      registerUndo({
+        storageType: type,
+        beforeData,
+        successMessage: withUndoHint(deleteSuccessMessage)
+      });
+    } catch (error) {
+      console.error('Failed to delete selected items:', error);
+      showToast(getErrorMessage(error, getMessage('STORAGE_DELETE_FAILED', 'Failed to delete')), 'error');
+    }
+  }
+
+  // Modal submit
+  async function handleModalSubmit(payload) {
+    if (payload.mode === 'bulk') {
+      return handleBulkSubmit(payload);
     }
 
-    if (!normalizedValue) {
-      showToast('Value cannot be empty');
-      elements.modal.valueInput.focus();
-      return;
-    }
-
+    const { newKey, value, oldKey } = payload;
     // Check for duplicate key
     const currentData = state.storageData[state.currentType];
+    const type = state.currentType; // 'local' or 'session'
     if (Object.prototype.hasOwnProperty.call(currentData, newKey) && newKey !== oldKey) {
       const confirmed = await showConfirm(
         'Duplicate Key', 
@@ -693,40 +736,113 @@ document.addEventListener('DOMContentLoaded', () => {
         'Overwrite',
         true
       );
-      if (!confirmed) return;
+      if (!confirmed) return false;
     }
-
-    const type = state.currentType; // 'local' or 'session'
+    const beforeData = { ...(state.storageData[type] || {}) };
+    const shouldRegisterUndo = !!oldKey || Object.prototype.hasOwnProperty.call(beforeData, newKey);
     
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (storageType, k, v, oldK) => {
-          const storage = storageType === 'local' ? localStorage : sessionStorage;
-          
-          // If renaming (oldK exists and is different), remove old key first
-          if (oldK && oldK !== k) {
-            storage.removeItem(oldK);
-          }
-          
-          storage.setItem(k, v);
-        },
-        args: [type, newKey, value, oldKey]
-      });
+      const tab = await storageService.getActiveTab();
+      if (!tab || typeof tab.id !== 'number') {
+        showToast(getMessage('NO_ACTIVE_TAB', 'No active tab found'), 'error');
+        return false;
+      }
 
-      closeModal();
-      showToast('Saved successfully');
+      await storageService.upsertItem(tab.id, type, newKey, value, oldKey);
+
       await loadData(); // Refresh list
 
-      // If it's a new item (not editing), scroll to it
+      const singleChangeSet = {
+        addedKeys: [],
+        updatedKeys: [],
+        deletedKeys: []
+      };
       if (!oldKey) {
-        scrollToItem(newKey);
+        singleChangeSet.addedKeys.push(newKey);
+      } else if (oldKey === newKey) {
+        singleChangeSet.updatedKeys.push(newKey);
+      } else {
+        singleChangeSet.deletedKeys.push(oldKey);
+        singleChangeSet.addedKeys.push(newKey);
       }
+      applyTransientChanges(singleChangeSet, { scrollKey: newKey });
+      if (shouldRegisterUndo) {
+        const hasExistingTarget = Object.prototype.hasOwnProperty.call(beforeData, newKey);
+        let undoMessage;
+        if (oldKey && oldKey !== newKey) {
+          undoMessage = `Renamed "${oldKey}" to "${newKey}".`;
+        } else if (oldKey) {
+          undoMessage = `Updated "${newKey}".`;
+        } else if (hasExistingTarget) {
+          undoMessage = `Overwrote "${newKey}".`;
+        } else {
+          undoMessage = getMessage('SAVE_SUCCESS', 'Saved successfully');
+        }
+        registerUndo({
+          storageType: type,
+          beforeData,
+          successMessage: withUndoHint(undoMessage)
+        });
+      } else {
+        showToast(getMessage('SAVE_SUCCESS', 'Saved successfully'), 'success');
+      }
+      return true;
     } catch (error) {
       console.error('Failed to save:', error);
-      showToast('Failed to save');
+      showToast(getErrorMessage(error, getMessage('STORAGE_WRITE_FAILED', 'Failed to save')), 'error');
+      return false;
+    }
+  }
+
+  async function handleBulkSubmit({ items, conflictStrategy }) {
+    const type = state.currentType;
+    const currentData = state.storageData[type] || {};
+    const beforeData = { ...currentData };
+    try {
+      const tab = await storageService.getActiveTab();
+      if (!tab || typeof tab.id !== 'number') {
+        showToast(getMessage('NO_ACTIVE_TAB', 'No active tab found'), 'error');
+        return false;
+      }
+
+      const result = await storageService.upsertItems(tab.id, type, items, conflictStrategy);
+      await loadData();
+      const applied = result?.appliedCount ?? 0;
+      const skipped = result?.skippedCount ?? 0;
+      const appliedKeys = Array.isArray(result?.appliedKeys) ? result.appliedKeys : [];
+      const firstAppliedKey = typeof result?.firstAppliedKey === 'string' ? result.firstAppliedKey : null;
+      const bulkChangeSet = {
+        addedKeys: [],
+        updatedKeys: [],
+        deletedKeys: []
+      };
+      appliedKeys.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(currentData, key)) {
+          bulkChangeSet.updatedKeys.push(key);
+        } else {
+          bulkChangeSet.addedKeys.push(key);
+        }
+      });
+      if (applied > 0) {
+        applyTransientChanges(bulkChangeSet, { scrollKey: firstAppliedKey });
+      }
+      const bulkResultMessage = typeof TOAST_MESSAGES.BULK_IMPORT_RESULT === 'function'
+        ? TOAST_MESSAGES.BULK_IMPORT_RESULT(applied, skipped)
+        : `Imported ${applied} keys, skipped ${skipped}`;
+      const overwroteExisting = conflictStrategy === 'overwrite'
+        && appliedKeys.some((key) => Object.prototype.hasOwnProperty.call(beforeData, key));
+      if (overwroteExisting) {
+        const overwriteCount = appliedKeys.filter((key) => Object.prototype.hasOwnProperty.call(beforeData, key)).length;
+        const undoMessage = `Overwrote ${overwriteCount} keys (${applied} applied, ${skipped} skipped).`;
+        registerUndo({ storageType: type, beforeData, successMessage: withUndoHint(undoMessage) });
+      } else {
+        showToast(bulkResultMessage, 'success');
+      }
+      return true;
+    } catch (error) {
+      console.error('Failed to bulk save:', error);
+      showToast(getErrorMessage(error, getMessage('STORAGE_WRITE_FAILED', 'Failed to save')), 'error');
+      return false;
     }
   }
 
@@ -741,31 +857,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const type = state.currentType;
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (storageType, k) => {
-          if (storageType === 'local') {
-            localStorage.removeItem(k);
-          } else {
-            sessionStorage.removeItem(k);
-          }
-        },
-        args: [type, key]
-      });
+      const beforeData = { ...(state.storageData[type] || {}) };
+      const tab = await storageService.getActiveTab();
+      if (!tab || typeof tab.id !== 'number') {
+        showToast(getMessage('NO_ACTIVE_TAB', 'No active tab found'), 'error');
+        return;
+      }
+      await storageService.removeItem(tab.id, type, key);
 
-      showToast('Item deleted');
-      loadData();
+      await loadData();
+      registerUndo({
+        storageType: type,
+        beforeData,
+        successMessage: withUndoHint(`Deleted "${key}".`)
+      });
     } catch (error) {
       console.error('Failed to delete:', error);
-      showToast('Failed to delete');
+      showToast(getErrorMessage(error, getMessage('STORAGE_DELETE_FAILED', 'Failed to delete')), 'error');
     }
   }
 
   async function clearAllStorage() {
     const type = state.currentType;
     const typeName = type === 'local' ? 'LocalStorage' : 'SessionStorage';
+    const beforeData = { ...(state.storageData[type] || {}) };
     
     const confirmed = await showConfirm(
       'Clear Storage', 
@@ -776,25 +891,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!confirmed) return;
 
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        func: (storageType) => {
-          if (storageType === 'local') {
-            localStorage.clear();
-          } else {
-            sessionStorage.clear();
-          }
-        },
-        args: [type]
-      });
+      const tab = await storageService.getActiveTab();
+      if (!tab || typeof tab.id !== 'number') {
+        showToast(getMessage('NO_ACTIVE_TAB', 'No active tab found'), 'error');
+        return;
+      }
+      await storageService.clearStorage(tab.id, type);
 
-      showToast(`All ${typeName} items cleared`);
-      loadData();
+      const clearMessage = type === 'local'
+        ? getMessage('CLEAR_SUCCESS_LOCAL', `All ${typeName} items cleared`)
+        : getMessage('CLEAR_SUCCESS_SESSION', `All ${typeName} items cleared`);
+      await loadData();
+      registerUndo({ storageType: type, beforeData, successMessage: withUndoHint(clearMessage) });
     } catch (error) {
       console.error('Failed to clear storage:', error);
-      showToast('Failed to clear storage');
+      showToast(getErrorMessage(error, getMessage('STORAGE_CLEAR_FAILED', 'Failed to clear storage')), 'error');
     }
   }
 
@@ -817,110 +928,16 @@ document.addEventListener('DOMContentLoaded', () => {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
     
-    showToast('Exported successfully');
+    showToast(getMessage('EXPORT_SUCCESS', 'Exported successfully'), 'success');
   }
 
   async function getCurrentTabUrl() {
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await storageService.getActiveTab();
       return tab ? tab.url : 'unknown';
     } catch (e) {
       return 'unknown';
     }
   }
 
-  // Utilities
-  function showConfirm(title, message, okText = 'OK', isDanger = false) {
-    return new Promise((resolve) => {
-      elements.confirm.title.textContent = title;
-      elements.confirm.message.textContent = message;
-      elements.confirm.okBtn.textContent = okText;
-      
-      if (isDanger) {
-        elements.confirm.okBtn.className = 'danger-btn';
-      } else {
-        elements.confirm.okBtn.className = 'primary-btn';
-      }
-
-      const close = () => {
-        elements.confirm.container.classList.add('hidden');
-        elements.confirm.cancelBtn.removeEventListener('click', onCancel);
-        elements.confirm.okBtn.removeEventListener('click', onOk);
-        elements.confirm.container.removeEventListener('click', onOutside);
-        document.removeEventListener('keydown', onEsc);
-      };
-
-      const onCancel = () => {
-        close();
-        resolve(false);
-      };
-
-      const onOk = () => {
-        close();
-        resolve(true);
-      };
-
-      const onOutside = (e) => {
-        if (e.target === elements.confirm.container) {
-          close();
-          resolve(false);
-        }
-      };
-
-      const onEsc = (e) => {
-        if (e.key === 'Escape') {
-          e.stopPropagation(); // Stop event bubbling to prevent popup close
-          e.preventDefault();
-          close();
-          resolve(false);
-        }
-      };
-
-      elements.confirm.cancelBtn.addEventListener('click', onCancel);
-      elements.confirm.okBtn.addEventListener('click', onOk);
-      elements.confirm.container.addEventListener('click', onOutside);
-      document.addEventListener('keydown', onEsc);
-
-      elements.confirm.container.classList.remove('hidden');
-    });
-  }
-
-  function escapeHtml(unsafe) {
-    if (typeof unsafe !== 'string') return String(unsafe);
-    return unsafe
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
-
-  function showToast(message) {
-    // Remove existing toast
-    const existingToast = document.querySelector('.toast');
-    if (existingToast) {
-      document.body.removeChild(existingToast);
-    }
-
-    const toast = document.createElement('div');
-    toast.className = 'toast';
-    toast.textContent = message;
-    document.body.appendChild(toast);
-
-    // Trigger reflow
-    void toast.offsetHeight;
-    
-    toast.classList.add('show');
-
-    setTimeout(() => {
-      if (document.body.contains(toast)) {
-        toast.classList.remove('show');
-        setTimeout(() => {
-          if (document.body.contains(toast)) {
-            document.body.removeChild(toast);
-          }
-        }, 300);
-      }
-    }, 2000);
-  }
 });

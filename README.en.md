@@ -4,6 +4,13 @@
 
 <img width="1847" height="758" alt="WebStorage Pro" src="https://github.com/user-attachments/assets/366a575e-8d03-468f-af62-e5ca1df2da87" />
 
+## 🆕 What’s New (Highlights)
+
+- Added **Single / Bulk** add modes, including bulk JSON import with conflict handling (overwrite / skip).
+- Added **Select mode** batch workflow: batch copy, batch export, batch delete, plus quick select-all for the current filtered list.
+- Added automatic in-page storage change detection with transient highlights for **added / updated / deleted** items (auto-reset after 2s).
+- Added **Undo (10s)** for destructive operations: delete, clear, and overwrite actions can be reverted within 10 seconds (single-slot, last action only).
+
 ---
 
 ## 📖 Usage
@@ -32,6 +39,7 @@
 - **Search** keys with live filtering and a clear control; **Refresh** reloads data from the page.
 - **CRUD**: add, edit (including **rename via key**), delete items; **clear all** for the current type (with confirmation).
 - **Duplicate keys:** overwrite confirmation when saving would conflict with an existing key.
+- **Live page change detection:** the popup automatically detects in-page Storage changes and highlights **added / updated / deleted** items (auto-resets after 2s).
 - **Restricted pages** (`chrome://`, `edge://`, `about:`, etc.): error state and disabled actions.
 
 ### Copy & export
@@ -44,6 +52,22 @@
 
 - Standard **Key** and **Value** fields.
 - Optional **JSON object** field: paste e.g. `{"myKey":"myValue"}`; on blur or after paste, valid objects **fill Key / Value** (first key if several; non-string values use `JSON.stringify` for the value field).
+- Supports **Single / Bulk** modes:
+  - **Single** for one item add/edit;
+  - **Bulk** for JSON object import with conflict handling (overwrite or skip).
+
+### Multi-select & batch actions
+
+- Enter **Select** mode to select multiple items from the current list.
+- Batch **Copy / Export / Delete** for selected items.
+- Quick select-all (based on current filter) and clear-selection controls.
+
+### Undo
+
+- A **10-second undo window** is available for destructive operations (single-slot, last action only):
+  - single delete, batch delete, clear current storage type;
+  - overwrite writes (single overwrite and bulk overwrite).
+- Success toasts provide an **Undo (10s)** action; it expires automatically.
 
 ### 📌 Popup vs Side Panel (pin)
 
@@ -96,5 +120,9 @@
 - [x] Smart copy (value / key / JSON object)  
 - [x] Export JSON  
 - [x] JSON object paste → fill Key / Value in the modal  
+- [x] Single/Bulk add mode + bulk conflict strategy (overwrite/skip)  
+- [x] Multi-select + batch copy/export/delete + select-all control  
+- [x] Automatic storage change watch + add/update/delete highlight feedback  
+- [x] 10-second undo for delete/clear/overwrite (single-slot undo)  
 - [x] 📌 Pin + Side Panel, per-tab pin state  
 - [x] 🌓 Dark / Light theme, toasts, custom confirm dialogs  

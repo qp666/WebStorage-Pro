@@ -35,7 +35,7 @@ body {
   margin: 0;
   padding: 0;
   width: 400px;
-  height: 500px;
+  height: 580px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   background-color: var(--bg-color);
   color: var(--text-primary);
@@ -180,6 +180,46 @@ header {
   gap: 8px;
 }
 
+.toolbar-btn {
+  white-space: nowrap;
+}
+
+.bulk-actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--border-color);
+  border-bottom: 1px solid var(--border-color);
+  background-color: var(--card-bg);
+  font-size: 12px;
+}
+
+#bulk-selected-count {
+  margin-right: auto;
+  color: var(--text-secondary);
+}
+
+.bulk-actions-bar .secondary-btn,
+.bulk-actions-bar .danger-btn {
+  padding: 6px 10px;
+}
+
+.bulk-select-all-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  min-width: 18px;
+}
+
+.bulk-select-all-control input {
+  margin: 0;
+  cursor: pointer;
+}
+
 .badge {
   display: inline-flex;
   align-items: center;
@@ -237,6 +277,10 @@ header {
   padding: 0 16px 16px;
 }
 
+#bulk-actions-bar:not(.hidden) + .storage-list {
+  padding-top: 10px;
+}
+
 .storage-item {
   background-color: var(--card-bg);
   border: 1px solid var(--border-color);
@@ -247,6 +291,71 @@ header {
   justify-content: space-between;
   align-items: flex-start;
   transition: box-shadow 0.2s;
+}
+
+.storage-item.item-change-added {
+  border-color: rgba(16, 185, 129, 0.9);
+  background: linear-gradient(0deg, rgba(16, 185, 129, 0.22), rgba(16, 185, 129, 0.22)), var(--card-bg);
+  animation: item-added-flash 2.2s ease-out;
+}
+
+.storage-item.item-change-updated {
+  border-color: rgba(37, 99, 235, 0.95);
+  background: linear-gradient(0deg, rgba(37, 99, 235, 0.2), rgba(37, 99, 235, 0.2)), var(--card-bg);
+  animation: item-updated-flash 2.2s ease-out;
+}
+
+.change-summary {
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.change-summary-deleted {
+  color: #7f1d1d;
+  background: rgba(239, 68, 68, 0.24);
+  border: 1px solid rgba(220, 38, 38, 0.6);
+  border-left: 4px solid #dc2626;
+}
+
+@keyframes item-added-flash {
+  0% {
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.75), 0 0 20px rgba(16, 185, 129, 0.45);
+    transform: translateY(-1px);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0), 0 0 0 rgba(16, 185, 129, 0);
+    transform: translateY(0);
+  }
+}
+
+@keyframes item-updated-flash {
+  0% {
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.78), 0 0 22px rgba(37, 99, 235, 0.48);
+    transform: translateY(-1px);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0), 0 0 0 rgba(37, 99, 235, 0);
+    transform: translateY(0);
+  }
+}
+
+[data-theme="dark"] .change-summary-deleted {
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.28);
+  border-color: rgba(248, 113, 113, 0.7);
+  border-left-color: #f87171;
+}
+
+.storage-item.selection-mode {
+  align-items: center;
+}
+
+.item-select {
+  margin-right: 10px;
+  cursor: pointer;
 }
 
 .storage-item:hover {
@@ -366,6 +475,11 @@ footer {
   background-color: var(--primary-hover);
 }
 
+.primary-btn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
 /* Modal */
 .modal {
   position: fixed;
@@ -412,7 +526,8 @@ footer {
 }
 
 .form-group input,
-.form-group textarea {
+.form-group textarea,
+.form-group select {
   width: 100%;
   padding: 8px;
   border: 1px solid var(--border-color);
@@ -432,6 +547,37 @@ footer {
 
 .form-group textarea.json-object-input {
   min-height: 56px;
+}
+
+.mode-switch-group {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.mode-switch-btn {
+  flex: 1;
+  border: 1px solid var(--border-color);
+  background: var(--card-bg);
+  color: var(--text-primary);
+  border-radius: 6px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mode-switch-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  color: var(--text-secondary);
+  background-color: var(--hover-bg);
+}
+
+.mode-switch-btn.active {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
+  background-color: rgba(37, 99, 235, 0.08);
 }
 
 .modal-actions {
@@ -460,18 +606,54 @@ footer {
 /* Toast */
 .toast {
   position: fixed;
-  bottom: 24px;
+  top: 50%;
   left: 50%;
-  transform: translateX(-50%);
-  background-color: #333;
+  transform: translate(-50%, -50%);
+  background-color: #334155;
   color: white;
   padding: 8px 16px;
   border-radius: 20px;
   font-size: 13px;
+  text-align: center;
+  max-width: calc(100% - 40px);
+  box-sizing: border-box;
   opacity: 0;
   transition: opacity 0.3s;
   pointer-events: none;
-  z-index: 200;
+  z-index: 300;
+}
+
+.toast.toast-actionable {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.toast-action-btn {
+  border: 1px solid rgba(255, 255, 255, 0.65);
+  background: transparent;
+  color: #ffffff;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toast-action-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.toast.toast-success {
+  background-color: #16a34a;
+}
+
+.toast.toast-error {
+  background-color: #b91c1c;
+}
+
+.toast.toast-info {
+  background-color: #334155;
 }
 
 .toast.show {
