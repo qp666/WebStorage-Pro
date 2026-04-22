@@ -344,6 +344,22 @@ document.addEventListener('DOMContentLoaded', () => {
     elements.modal.jsonObjectInput.addEventListener('paste', () => {
       window.setTimeout(applyJsonObjectToKeyValue, 0);
     });
+    elements.modal.keyInput.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.key !== 'Enter' || e.shiftKey) return;
+      e.preventDefault();
+      if (!elements.modal.keyInput.value.trim()) return;
+      elements.modal.valueInput.focus();
+    });
+    elements.modal.valueInput.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.key !== 'Enter' || e.shiftKey) return;
+      e.preventDefault();
+      saveItem();
+    });
+    elements.modal.jsonObjectInput.addEventListener('keydown', (e) => {
+      if (e.isComposing || e.key !== 'Enter' || e.shiftKey) return;
+      e.preventDefault();
+      saveItem();
+    });
     
     // Close modal on outside click
     elements.modal.container.addEventListener('click', (e) => {
@@ -618,7 +634,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isEdit) {
       elements.modal.valueInput.focus();
     } else {
-      elements.modal.keyInput.focus();
+      elements.modal.jsonObjectInput.focus();
     }
 
     const onEsc = (e) => {
@@ -653,10 +669,18 @@ document.addEventListener('DOMContentLoaded', () => {
   async function saveItem() {
     const newKey = elements.modal.keyInput.value.trim();
     const value = elements.modal.valueInput.value;
+    const normalizedValue = value.trim();
     const oldKey = state.editingKey;
 
     if (!newKey) {
       showToast('Key cannot be empty');
+      elements.modal.keyInput.focus();
+      return;
+    }
+
+    if (!normalizedValue) {
+      showToast('Value cannot be empty');
+      elements.modal.valueInput.focus();
       return;
     }
 
