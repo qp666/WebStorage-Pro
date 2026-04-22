@@ -69,10 +69,41 @@
     }
 
     function showToast(message, type = 'info', options = {}) {
-      const { actionText = '', onAction = null, duration: customDuration } = options;
+      const {
+        actionText = '',
+        onAction = null,
+        duration: customDuration,
+        actionCountdownMs = 0,
+        actionCountdownFormatter = null
+      } = options;
       const existingToast = document.querySelector('.toast');
       if (existingToast) {
         document.body.removeChild(existingToast);
+      }
+
+      let removeTimer = null;
+      let countdownTimer = null;
+
+      function cleanupTimers() {
+        if (removeTimer) {
+          clearTimeout(removeTimer);
+          removeTimer = null;
+        }
+        if (countdownTimer) {
+          clearInterval(countdownTimer);
+          countdownTimer = null;
+        }
+      }
+
+      function removeToast(toast) {
+        if (!document.body.contains(toast)) return;
+        cleanupTimers();
+        toast.classList.remove('show');
+        setTimeout(() => {
+          if (document.body.contains(toast)) {
+            document.body.removeChild(toast);
+          }
+        }, 300);
       }
 
       const toast = document.createElement('div');
@@ -90,17 +121,21 @@
         actionBtn.className = 'toast-action-btn';
         actionBtn.type = 'button';
         actionBtn.textContent = actionText;
+        const countdownStart = Date.now();
+        if (actionCountdownMs > 0 && typeof actionCountdownFormatter === 'function') {
+          const updateCountdown = () => {
+            const remainingMs = Math.max(0, actionCountdownMs - (Date.now() - countdownStart));
+            const remainingSeconds = Math.ceil(remainingMs / 1000);
+            actionBtn.textContent = actionCountdownFormatter(remainingSeconds);
+          };
+          updateCountdown();
+          countdownTimer = setInterval(updateCountdown, 250);
+        }
         actionBtn.addEventListener('click', async () => {
           try {
             await onAction();
           } finally {
-            if (!document.body.contains(toast)) return;
-            toast.classList.remove('show');
-            setTimeout(() => {
-              if (document.body.contains(toast)) {
-                document.body.removeChild(toast);
-              }
-            }, 300);
+            removeToast(toast);
           }
         });
         toast.appendChild(actionBtn);
@@ -113,14 +148,8 @@
       const duration = typeof customDuration === 'number'
         ? customDuration
         : (type === 'error' ? 2800 : 1800);
-      setTimeout(() => {
-        if (!document.body.contains(toast)) return;
-        toast.classList.remove('show');
-        setTimeout(() => {
-          if (document.body.contains(toast)) {
-            document.body.removeChild(toast);
-          }
-        }, 300);
+      removeTimer = setTimeout(() => {
+        removeToast(toast);
       }, duration);
     }
 

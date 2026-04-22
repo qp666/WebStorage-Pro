@@ -1,0 +1,20 @@
+{
+  "name": "webstorage-pro",
+  "version": "1.0.0",
+  "description": "**WebStorage Pro** 面向前端与全栈开发者，在**当前激活标签页**上可视化查看、编辑 **`localStorage`** 与 **`sessionStorage`**，比反复打开 DevTools「Application」面板更轻量。",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qp666/WebStorage-Pro.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/qp666/WebStorage-Pro/issues"
+  },
+  "homepage": "https://github.com/qp666/WebStorage-Pro#readme"
+}

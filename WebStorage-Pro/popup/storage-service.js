@@ -141,18 +141,30 @@
       }
     }
 
-    async function replaceStorageData(tabId, storageType, data) {
+    async function applyStorageUndoPlan(tabId, storageType, plan) {
       try {
         await chrome.scripting.executeScript({
           target: { tabId },
-          func: (type, nextData) => {
+          func: (type, undoPlan) => {
             const storage = type === 'local' ? localStorage : sessionStorage;
-            storage.clear();
-            Object.entries(nextData || {}).forEach(([key, value]) => {
+            if (!undoPlan || typeof undoPlan !== 'object') return;
+
+            if (undoPlan.mode === 'replace') {
+              storage.clear();
+              Object.entries(undoPlan.data || {}).forEach(([key, value]) => {
+                storage.setItem(key, String(value));
+              });
+              return;
+            }
+
+            const removeKeys = Array.isArray(undoPlan.removeKeys) ? undoPlan.removeKeys : [];
+            removeKeys.forEach((key) => storage.removeItem(key));
+            const setEntries = undoPlan.setEntries || {};
+            Object.entries(setEntries).forEach(([key, value]) => {
               storage.setItem(key, String(value));
             });
           },
-          args: [storageType, data]
+          args: [storageType, plan]
         });
       } catch (error) {
         throw createStorageError(ERROR_CODES.SCRIPT_EXECUTION_FAILED || 'SCRIPT_EXECUTION_FAILED', error);
@@ -196,7 +208,7 @@
       removeItem,
       removeItems,
       clearStorage,
-      replaceStorageData,
+      applyStorageUndoPlan,
       enableSidePanel,
       openSidePanel,
       disableSidePanel

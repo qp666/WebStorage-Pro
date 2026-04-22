@@ -10,6 +10,7 @@
 - Added **Select mode** batch workflow: batch copy, batch export, batch delete, plus quick select-all for the current filtered list.
 - Added automatic in-page storage change detection with transient highlights for **added / updated / deleted** items (auto-reset after 2s).
 - Added **Undo (10s)** for destructive operations: delete, clear, and overwrite actions can be reverted within 10 seconds (single-slot, last action only).
+- For release-by-release details, see [CHANGELOG.md](./CHANGELOG.md).
 
 ---
 

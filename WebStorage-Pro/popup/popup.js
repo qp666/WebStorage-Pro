@@ -6,6 +6,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const SEARCH_DEBOUNCE_MS = popupConfig.CONSTANTS?.SEARCH_DEBOUNCE_MS ?? 150;
   const SIDEPANEL_MIN_SYNC_INTERVAL_MS = popupConfig.CONSTANTS?.SIDEPANEL_MIN_SYNC_INTERVAL_MS ?? 200;
   const STORAGE_WATCH_INTERVAL_MS = popupConfig.CONSTANTS?.STORAGE_WATCH_INTERVAL_MS ?? 1200;
+  const STORAGE_WATCH_ACTIVE_INTERVAL_MS = popupConfig.CONSTANTS?.STORAGE_WATCH_ACTIVE_INTERVAL_MS ?? 1000;
+  const STORAGE_WATCH_IDLE_INTERVAL_MS = popupConfig.CONSTANTS?.STORAGE_WATCH_IDLE_INTERVAL_MS ?? 4000;
+  const STORAGE_WATCH_ACTIVE_WINDOW_MS = popupConfig.CONSTANTS?.STORAGE_WATCH_ACTIVE_WINDOW_MS ?? 12000;
   const UNDO_WINDOW_MS = popupConfig.CONSTANTS?.UNDO_WINDOW_MS ?? 10000;
 
   function getMessage(key, fallback) {
@@ -36,8 +39,9 @@ document.addEventListener('DOMContentLoaded', () => {
     watchInFlight: false,
     activeChangeSet: null,
     changeResetTimer: null,
-    undoEntry: null,
-    undoTimer: null,
+    lastInteractionAt: Date.now(),
+    dataRequestSeq: 0,
+    appliedDataSeq: 0,
     currentTabId: null,
     currentTabUrl: null,
     searchDebounceTimer: null
@@ -118,6 +122,23 @@ document.addEventListener('DOMContentLoaded', () => {
     onSubmit: handleModalSubmit
   });
   const storageService = createStorageService();
+  const telemetryService = createTelemetryService();
+  const undoController = createUndoController({
+    windowMs: UNDO_WINDOW_MS,
+    showToast,
+    storageService,
+    getMessage,
+    loadData,
+    getCurrentType: () => state.currentType,
+    getCurrentDataByType: (type) => state.storageData[type] || {},
+    detectStorageChanges,
+    applyTransientChanges,
+    onUndoShown: ({ storageType, mode }) => track('undo_shown', { storageType, mode }),
+    onUndoTriggered: ({ storageType, mode }) => track('undo_clicked', { storageType, mode }),
+    onUndoSucceeded: ({ storageType, mode }) => track('undo_succeeded', { storageType, mode }),
+    onUndoExpired: () => track('undo_expired'),
+    onUndoFailed: () => track('undo_failed')
+  });
   const lockSyncController = createLockSyncController({
     lockButton: elements.pinBtn,
     modalContainer: elements.modal.container,
@@ -142,6 +163,7 @@ document.addEventListener('DOMContentLoaded', () => {
   init();
 
   async function init() {
+    track('popup_opened');
     await initLayoutMode();
     await lockSyncController.initLockMode();
     initTheme();
@@ -216,78 +238,91 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function clearUndoEntry() {
-    state.undoEntry = null;
-    if (state.undoTimer) {
-      clearTimeout(state.undoTimer);
-      state.undoTimer = null;
-    }
-  }
-
   function withUndoHint(message) {
     return `${message} Click Undo to restore.`;
   }
 
-  function registerUndo({ storageType, beforeData, successMessage }) {
-    const undoId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const expiresAt = Date.now() + UNDO_WINDOW_MS;
-    state.undoEntry = {
-      id: undoId,
-      storageType,
-      beforeData: { ...(beforeData || {}) },
-      expiresAt
-    };
-    if (state.undoTimer) {
-      clearTimeout(state.undoTimer);
-      state.undoTimer = null;
-    }
-    state.undoTimer = window.setTimeout(() => {
-      if (state.undoEntry && state.undoEntry.id === undoId) {
-        state.undoEntry = null;
-        state.undoTimer = null;
-      }
-    }, UNDO_WINDOW_MS);
-
-    showToast(successMessage, 'success', {
-      actionText: getMessage('UNDO_ACTION', 'Undo'),
-      duration: UNDO_WINDOW_MS,
-      onAction: async () => {
-        await applyUndo(undoId);
-      }
-    });
+  function track(event, props = {}) {
+    telemetryService.track(event, props);
   }
 
-  async function applyUndo(undoId) {
-    if (!state.undoEntry || state.undoEntry.id !== undoId) {
-      showToast(getMessage('UNDO_EXPIRED', 'Undo expired'), 'info');
-      return;
+  function markUserInteraction() {
+    state.lastInteractionAt = Date.now();
+  }
+
+  function getWatchIntervalMs() {
+    const delta = Date.now() - state.lastInteractionAt;
+    if (delta <= STORAGE_WATCH_ACTIVE_WINDOW_MS) {
+      return STORAGE_WATCH_ACTIVE_INTERVAL_MS;
     }
-    if (Date.now() > state.undoEntry.expiresAt) {
-      clearUndoEntry();
-      showToast(getMessage('UNDO_EXPIRED', 'Undo expired'), 'info');
-      return;
+    return STORAGE_WATCH_IDLE_INTERVAL_MS || STORAGE_WATCH_INTERVAL_MS;
+  }
+
+  function registerUndo({ storageType, plan, successMessage }) {
+    undoController.registerUndo({ storageType, plan, successMessage });
+  }
+
+  function createDeltaUndoPlan({ setEntries = {}, removeKeys = [] } = {}) {
+    return { mode: 'delta', setEntries, removeKeys };
+  }
+
+  function createReplaceUndoPlan(data = {}) {
+    return { mode: 'replace', data };
+  }
+
+  function buildDeleteUndoPlan(beforeData, keys) {
+    const setEntries = {};
+    (keys || []).forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(beforeData, key)) {
+        setEntries[key] = beforeData[key];
+      }
+    });
+    return createDeltaUndoPlan({ setEntries });
+  }
+
+  function buildSingleUpsertUndoPlan(beforeData, oldKey, newKey) {
+    const setEntries = {};
+    const removeKeys = [];
+    if (!oldKey) {
+      if (Object.prototype.hasOwnProperty.call(beforeData, newKey)) {
+        setEntries[newKey] = beforeData[newKey];
+      } else {
+        removeKeys.push(newKey);
+      }
+      return createDeltaUndoPlan({ setEntries, removeKeys });
     }
 
-    const { storageType, beforeData } = state.undoEntry;
-    clearUndoEntry();
-    const currentData = { ...(state.storageData[storageType] || {}) };
-    try {
-      const tab = await storageService.getActiveTab();
-      if (!tab || typeof tab.id !== 'number') {
-        showToast(getMessage('NO_ACTIVE_TAB', 'No active tab found'), 'error');
-        return;
+    if (oldKey === newKey) {
+      if (Object.prototype.hasOwnProperty.call(beforeData, newKey)) {
+        setEntries[newKey] = beforeData[newKey];
+      } else {
+        removeKeys.push(newKey);
       }
-      await storageService.replaceStorageData(tab.id, storageType, beforeData);
-      await loadData();
-      if (state.currentType === storageType) {
-        const changeSet = detectStorageChanges(currentData, beforeData);
-        applyTransientChanges(changeSet);
-      }
-      showToast(getMessage('UNDO_SUCCESS', 'Changes reverted'), 'success');
-    } catch (error) {
-      console.error('Failed to undo:', error);
-      showToast(getMessage('UNDO_FAILED', 'Failed to undo'), 'error');
+      return createDeltaUndoPlan({ setEntries, removeKeys });
     }
+
+    if (Object.prototype.hasOwnProperty.call(beforeData, oldKey)) {
+      setEntries[oldKey] = beforeData[oldKey];
+    }
+    if (Object.prototype.hasOwnProperty.call(beforeData, newKey)) {
+      setEntries[newKey] = beforeData[newKey];
+    } else {
+      removeKeys.push(newKey);
+    }
+    return createDeltaUndoPlan({ setEntries, removeKeys });
+  }
+
+  function buildBulkOverwriteUndoPlan(beforeData, appliedKeys) {
+    const setEntries = {};
+    const removeKeys = [];
+    (appliedKeys || []).forEach((key) => {
+      if (Object.prototype.hasOwnProperty.call(beforeData, key)) {
+        setEntries[key] = beforeData[key];
+      } else {
+        removeKeys.push(key);
+      }
+    });
+    return createDeltaUndoPlan({ setEntries, removeKeys });
   }
 
   function scheduleChangeReset() {
@@ -305,14 +340,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function startStorageWatcher() {
     if (state.watchTimer) {
-      clearInterval(state.watchTimer);
+      clearTimeout(state.watchTimer);
       state.watchTimer = null;
     }
 
-    state.watchTimer = window.setInterval(async () => {
-      if (state.watchInFlight) return;
-      if (document.hidden) return;
-      if (!state.currentTabId || elements.modal.container.classList.contains('hidden') === false) return;
+    const scheduleNext = () => {
+      state.watchTimer = window.setTimeout(runWatch, getWatchIntervalMs());
+    };
+
+    const runWatch = async () => {
+      if (state.watchInFlight) {
+        scheduleNext();
+        return;
+      }
+      if (document.hidden) {
+        scheduleNext();
+        return;
+      }
+      if (!state.currentTabId || elements.modal.container.classList.contains('hidden') === false) {
+        scheduleNext();
+        return;
+      }
 
       state.watchInFlight = true;
       try {
@@ -321,7 +369,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (storageService.isRestrictedUrl(tab.url)) return;
         if (state.currentTabId !== tab.id) return;
 
+        const requestSeq = ++state.dataRequestSeq;
         const latestData = await storageService.readStorageData(tab.id);
+        if (requestSeq < state.dataRequestSeq) return;
+        state.appliedDataSeq = requestSeq;
         const localChanges = detectStorageChanges(state.storageData.local, latestData.local);
         const sessionChanges = detectStorageChanges(state.storageData.session, latestData.session);
         const hasChanges = hasAnyChange(localChanges) || hasAnyChange(sessionChanges);
@@ -331,12 +382,21 @@ document.addEventListener('DOMContentLoaded', () => {
         const currentChangeSet = state.currentType === 'local' ? localChanges : sessionChanges;
         updateTabBadges();
         applyTransientChanges(currentChangeSet);
+        track('watch_change_detected', {
+          type: state.currentType,
+          added: currentChangeSet.addedKeys.length,
+          updated: currentChangeSet.updatedKeys.length,
+          deleted: currentChangeSet.deletedKeys.length
+        });
       } catch {
         // Silent fail for background watch to avoid noisy toasts.
       } finally {
         state.watchInFlight = false;
+        scheduleNext();
       }
-    }, STORAGE_WATCH_INTERVAL_MS);
+    };
+
+    scheduleNext();
   }
 
   async function initLayoutMode() {
@@ -392,6 +452,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function bindEvents() {
+    document.addEventListener('click', markUserInteraction, { passive: true });
+    document.addEventListener('input', markUserInteraction, { passive: true });
+    document.addEventListener('pointerdown', markUserInteraction, { passive: true });
+    document.addEventListener('keydown', markUserInteraction);
+
     // Lock Toggle
     lockSyncController.bindEvents();
 
@@ -493,6 +558,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     try {
+      const requestSeq = ++state.dataRequestSeq;
       const tab = await storageService.getActiveTab();
       if (!tab) {
         showError(getMessage('NO_ACTIVE_TAB', 'No active tab found'));
@@ -508,15 +574,21 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      state.storageData = await storageService.readStorageData(tab.id);
+      const nextData = await storageService.readStorageData(tab.id);
+      if (requestSeq < state.dataRequestSeq) return;
+      state.appliedDataSeq = requestSeq;
+      state.storageData = nextData;
       setUiInteractive(true);
       updateTabBadges();
       renderCurrentList();
+      telemetryService.setContext({ tabId: state.currentTabId, storageType: state.currentType });
+      track('storage_loaded', { storageType: state.currentType, source: showToastOnSuccess ? 'manual_refresh' : 'auto' });
       if (showToastOnSuccess) {
         showToast(getMessage('REFRESHED_SUCCESS', 'Refreshed successfully'), 'success');
       }
     } catch (error) {
       console.error('Failed to load data:', error);
+      track('storage_load_failed', { storageType: state.currentType });
       showError(getErrorMessage(error, getMessage('STORAGE_LOAD_FAILED', 'Failed to load storage data. Page might be restricted.')));
     } finally {
       setLoading(false);
@@ -710,9 +782,10 @@ document.addEventListener('DOMContentLoaded', () => {
       await loadData();
       registerUndo({
         storageType: type,
-        beforeData,
+        plan: buildDeleteUndoPlan(beforeData, keys),
         successMessage: withUndoHint(deleteSuccessMessage)
       });
+      track('items_deleted_bulk', { storageType: type, selectedCount: keys.length });
     } catch (error) {
       console.error('Failed to delete selected items:', error);
       showToast(getErrorMessage(error, getMessage('STORAGE_DELETE_FAILED', 'Failed to delete')), 'error');
@@ -780,12 +853,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         registerUndo({
           storageType: type,
-          beforeData,
+          plan: buildSingleUpsertUndoPlan(beforeData, oldKey, newKey),
           successMessage: withUndoHint(undoMessage)
         });
       } else {
         showToast(getMessage('SAVE_SUCCESS', 'Saved successfully'), 'success');
       }
+      track('item_saved_single', {
+        storageType: type,
+        isEdit: !!oldKey,
+        renamed: !!oldKey && oldKey !== newKey
+      });
       return true;
     } catch (error) {
       console.error('Failed to save:', error);
@@ -834,10 +912,20 @@ document.addEventListener('DOMContentLoaded', () => {
       if (overwroteExisting) {
         const overwriteCount = appliedKeys.filter((key) => Object.prototype.hasOwnProperty.call(beforeData, key)).length;
         const undoMessage = `Overwrote ${overwriteCount} keys (${applied} applied, ${skipped} skipped).`;
-        registerUndo({ storageType: type, beforeData, successMessage: withUndoHint(undoMessage) });
+        registerUndo({
+          storageType: type,
+          plan: buildBulkOverwriteUndoPlan(beforeData, appliedKeys),
+          successMessage: withUndoHint(undoMessage)
+        });
       } else {
         showToast(bulkResultMessage, 'success');
       }
+      track('item_saved_bulk', {
+        storageType: type,
+        applied,
+        skipped,
+        conflictStrategy
+      });
       return true;
     } catch (error) {
       console.error('Failed to bulk save:', error);
@@ -868,9 +956,10 @@ document.addEventListener('DOMContentLoaded', () => {
       await loadData();
       registerUndo({
         storageType: type,
-        beforeData,
+        plan: buildDeleteUndoPlan(beforeData, [key]),
         successMessage: withUndoHint(`Deleted "${key}".`)
       });
+      track('item_deleted_single', { storageType: type });
     } catch (error) {
       console.error('Failed to delete:', error);
       showToast(getErrorMessage(error, getMessage('STORAGE_DELETE_FAILED', 'Failed to delete')), 'error');
@@ -902,7 +991,12 @@ document.addEventListener('DOMContentLoaded', () => {
         ? getMessage('CLEAR_SUCCESS_LOCAL', `All ${typeName} items cleared`)
         : getMessage('CLEAR_SUCCESS_SESSION', `All ${typeName} items cleared`);
       await loadData();
-      registerUndo({ storageType: type, beforeData, successMessage: withUndoHint(clearMessage) });
+      registerUndo({
+        storageType: type,
+        plan: createReplaceUndoPlan(beforeData),
+        successMessage: withUndoHint(clearMessage)
+      });
+      track('storage_cleared', { storageType: type, removedCount: Object.keys(beforeData).length });
     } catch (error) {
       console.error('Failed to clear storage:', error);
       showToast(getErrorMessage(error, getMessage('STORAGE_CLEAR_FAILED', 'Failed to clear storage')), 'error');
