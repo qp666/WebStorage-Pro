@@ -122,6 +122,7 @@ document.addEventListener('DOMContentLoaded', () => {
     onSubmit: handleModalSubmit
   });
   const storageService = createStorageService();
+  const watchUtils = createWatchUtils();
   const telemetryService = createTelemetryService();
   const undoController = createUndoController({
     windowMs: UNDO_WINDOW_MS,
@@ -251,11 +252,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function getWatchIntervalMs() {
-    const delta = Date.now() - state.lastInteractionAt;
-    if (delta <= STORAGE_WATCH_ACTIVE_WINDOW_MS) {
-      return STORAGE_WATCH_ACTIVE_INTERVAL_MS;
-    }
-    return STORAGE_WATCH_IDLE_INTERVAL_MS || STORAGE_WATCH_INTERVAL_MS;
+    return watchUtils.getWatchIntervalMs({
+      now: Date.now(),
+      lastInteractionAt: state.lastInteractionAt,
+      activeWindowMs: STORAGE_WATCH_ACTIVE_WINDOW_MS,
+      activeIntervalMs: STORAGE_WATCH_ACTIVE_INTERVAL_MS,
+      idleIntervalMs: STORAGE_WATCH_IDLE_INTERVAL_MS,
+      fallbackIntervalMs: STORAGE_WATCH_INTERVAL_MS
+    });
   }
 
   function registerUndo({ storageType, plan, successMessage }) {
@@ -369,9 +373,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (storageService.isRestrictedUrl(tab.url)) return;
         if (state.currentTabId !== tab.id) return;
 
-        const requestSeq = ++state.dataRequestSeq;
+        const requestSeq = watchUtils.nextRequestSeq(state.dataRequestSeq);
+        state.dataRequestSeq = requestSeq;
         const latestData = await storageService.readStorageData(tab.id);
-        if (requestSeq < state.dataRequestSeq) return;
+        if (!watchUtils.shouldApplyRequest(requestSeq, state.dataRequestSeq)) return;
         state.appliedDataSeq = requestSeq;
         const localChanges = detectStorageChanges(state.storageData.local, latestData.local);
         const sessionChanges = detectStorageChanges(state.storageData.session, latestData.session);
@@ -558,7 +563,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     try {
-      const requestSeq = ++state.dataRequestSeq;
+      const requestSeq = watchUtils.nextRequestSeq(state.dataRequestSeq);
+      state.dataRequestSeq = requestSeq;
       const tab = await storageService.getActiveTab();
       if (!tab) {
         showError(getMessage('NO_ACTIVE_TAB', 'No active tab found'));
@@ -575,7 +581,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const nextData = await storageService.readStorageData(tab.id);
-      if (requestSeq < state.dataRequestSeq) return;
+      if (!watchUtils.shouldApplyRequest(requestSeq, state.dataRequestSeq)) return;
       state.appliedDataSeq = requestSeq;
       state.storageData = nextData;
       setUiInteractive(true);

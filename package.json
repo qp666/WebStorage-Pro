@@ -4,7 +4,11 @@
   "description": "**WebStorage Pro** 面向前端与全栈开发者，在**当前激活标签页**上可视化查看、编辑 **`localStorage`** 与 **`sessionStorage`**，比反复打开 DevTools「Application」面板更轻量。",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "pw:install": "playwright install chromium",
+    "test:e2e": "playwright test",
+    "test:e2e:setup": "npm run pw:install && npm run test:e2e"
   },
   "repository": {
     "type": "git",
@@ -16,5 +20,10 @@
   "bugs": {
     "url": "https://github.com/qp666/WebStorage-Pro/issues"
   },
-  "homepage": "https://github.com/qp666/WebStorage-Pro#readme"
+  "homepage": "https://github.com/qp666/WebStorage-Pro#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.54.2",
+    "jsdom": "^27.0.1",
+    "vitest": "^3.2.4"
+  }
 }
