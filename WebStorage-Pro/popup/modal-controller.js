@@ -10,6 +10,7 @@
       mode: 'single',
       allowBulk: true,
       escCleanup: null,
+      jsonObjectDetectTimer: null,
       isBound: false
     };
 
@@ -24,6 +25,68 @@
 
     function shouldHandlePrimaryEnter(e) {
       return !e.isComposing && e.key === 'Enter' && !e.shiftKey;
+    }
+
+    function parseJsonObject(raw) {
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return { ok: false, message: getMessage('INVALID_JSON', 'Invalid JSON') };
+      }
+
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return {
+          ok: false,
+          message: getMessage('JSON_OBJECT_REQUIRED', 'Use a JSON object, e.g. {"key":"value"}')
+        };
+      }
+
+      const keys = Object.keys(parsed);
+      if (keys.length === 0) {
+        return { ok: false, message: getMessage('JSON_OBJECT_EMPTY', 'Object has no keys') };
+      }
+
+      return { ok: true, parsed, keys };
+    }
+
+    function switchJsonObjectToBulk(raw, keyCount) {
+      modalElements.bulkJsonInput.value = raw;
+      setMode('bulk');
+      const messageFactory = messages.JSON_OBJECT_SWITCHED_TO_BULK;
+      const message = typeof messageFactory === 'function'
+        ? messageFactory(keyCount)
+        : `Switched to Bulk for ${keyCount} keys`;
+      showToast(message, 'info');
+    }
+
+    function detectBulkJsonObjectInput() {
+      if (state.mode !== 'single' || !state.allowBulk) return;
+      const raw = modalElements.jsonObjectInput.value.trim();
+      if (!raw) return;
+
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        return;
+      }
+
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+      const keys = Object.keys(parsed);
+      if (keys.length > 1) {
+        switchJsonObjectToBulk(raw, keys.length);
+      }
+    }
+
+    function scheduleBulkJsonObjectDetection() {
+      if (state.jsonObjectDetectTimer) {
+        window.clearTimeout(state.jsonObjectDetectTimer);
+      }
+      state.jsonObjectDetectTimer = window.setTimeout(() => {
+        state.jsonObjectDetectTimer = null;
+        detectBulkJsonObjectInput();
+      }, 150);
     }
 
     function setMode(mode) {
@@ -63,22 +126,15 @@
       const raw = modalElements.jsonObjectInput.value.trim();
       if (!raw) return;
 
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        showToast(getMessage('INVALID_JSON', 'Invalid JSON'), 'error');
+      const result = parseJsonObject(raw);
+      if (!result.ok) {
+        showToast(result.message, 'error');
         return;
       }
 
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        showToast(getMessage('JSON_OBJECT_REQUIRED', 'Use a JSON object, e.g. {"key":"value"}'), 'error');
-        return;
-      }
-
-      const keys = Object.keys(parsed);
-      if (keys.length === 0) {
-        showToast(getMessage('JSON_OBJECT_EMPTY', 'Object has no keys'), 'error');
+      const { parsed, keys } = result;
+      if (keys.length > 1 && state.allowBulk) {
+        switchJsonObjectToBulk(raw, keys.length);
         return;
       }
 
@@ -210,6 +266,10 @@
       modalElements.valueInput.value = value;
       modalElements.bulkJsonInput.value = '';
       modalElements.bulkConflictSelect.value = 'overwrite';
+      if (state.jsonObjectDetectTimer) {
+        window.clearTimeout(state.jsonObjectDetectTimer);
+        state.jsonObjectDetectTimer = null;
+      }
       modalElements.keyInput.disabled = false;
       modalElements.modeBulkBtn.disabled = isEdit;
       modalElements.modeBulkBtn.title = isEdit ? 'Bulk mode disabled while editing one key' : '';
@@ -242,6 +302,10 @@
 
       modalElements.jsonObjectInput.value = '';
       modalElements.bulkJsonInput.value = '';
+      if (state.jsonObjectDetectTimer) {
+        window.clearTimeout(state.jsonObjectDetectTimer);
+        state.jsonObjectDetectTimer = null;
+      }
       modalElements.container.classList.add('hidden');
       setSaving(false);
       state.editingKey = null;
@@ -259,6 +323,7 @@
       modalElements.jsonObjectInput.addEventListener('paste', () => {
         window.setTimeout(applyJsonObjectToKeyValue, 0);
       });
+      modalElements.jsonObjectInput.addEventListener('input', scheduleBulkJsonObjectDetection);
 
       modalElements.keyInput.addEventListener('keydown', (e) => {
         if (state.mode !== 'single') return;

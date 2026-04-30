@@ -41,6 +41,7 @@
     JSON_OBJECT_REQUIRED: 'Use a JSON object, e.g. {"key":"value"}',
     JSON_OBJECT_EMPTY: 'Object has no keys',
     JSON_OBJECT_MULTI_KEYS: (count) => `Using first of ${count} keys`,
+    JSON_OBJECT_SWITCHED_TO_BULK: (count) => `Switched to Bulk for ${count} keys`,
     KEY_REQUIRED: 'Key cannot be empty',
     VALUE_REQUIRED: 'Value cannot be empty',
     BULK_JSON_REQUIRED: 'Bulk JSON cannot be empty',
